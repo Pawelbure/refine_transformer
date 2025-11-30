@@ -92,7 +92,7 @@ EXPERIMENTS["experiment1_2025-11-28"] = ExperimentConfig(
         G=1.0,
         T_SPAN=(0.0, 10.0),
         NUM_STEPS=2000,
-        NUM_TRAJECTORIES=600,
+        NUM_TRAJECTORIES=200,
         NUM_TRAJ_OOD=3,
         PERTURBATION=0.05,
     ),
