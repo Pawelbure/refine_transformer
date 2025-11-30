@@ -93,23 +93,9 @@ class PositionalEncoding(nn.Module):
         pe = pe.unsqueeze(0)  # (1, max_len, d_model)
         self.register_buffer("pe", pe)
 
-    def forward(self, x, position_ids=None):
-        """
-        position_ids: None (default, uses 0..T-1) or LongTensor of shape (B, T)
-        """
-        B, T, _ = x.shape
-        if position_ids is None:
-            pos_slice = self.pe[:, :T, :]
-            pos_slice = pos_slice.expand(B, -1, -1)
-        else:
-            pe = self.pe[0]
-            position_ids = position_ids.long()
-            if position_ids.max().item() >= pe.size(0):
-                raise ValueError(
-                    f"Position ids exceed max_len ({pe.size(0)}): {position_ids.max().item()}"
-                )
-            pos_slice = pe.index_select(0, position_ids.reshape(-1)).view(B, T, -1)
-        return x + pos_slice
+    def forward(self, x, start_pos: int = 0):
+        T = x.size(1)
+        return x + self.pe[:, start_pos:start_pos + T, :]
 
 
 class LatentTransformer(nn.Module):
@@ -138,14 +124,14 @@ class LatentTransformer(nn.Module):
         )
         self.readout = nn.Linear(latent_dim, latent_dim)
 
-    def forward(self, z_seq, position_ids=None):
+    def forward(self, z_seq, pos_offset: int = 0):
         """
         z_seq: (B, T, latent_dim)
         position_ids: None or (B, T) absolute positions for PE slicing
         returns z_next_pred: (B, latent_dim)
         """
         z_seq = self.input_norm(z_seq)
-        z_seq = self.pos_encoder(z_seq, position_ids=position_ids)
+        z_seq = self.pos_encoder(z_seq, start_pos=pos_offset)
         h = self.transformer(z_seq)      # (B, T, latent_dim)
         h_last = h[:, -1, :]
         return self.readout(h_last)
@@ -158,28 +144,26 @@ def train_transformer(dyn_model, encoder, decoder,
                       num_epochs, lr, device, out_dir,
                       test_norm, state_mean, state_std,
                       t_eval, seq_len, rollout_steps,
-                      tf_cfg):
+                      horizon,
+                      x_weight=1.0,
+                      teacher_forcing_start=1.0,
+                      teacher_forcing_end=0.2,
+                      latent_noise_std=0.0):
     dyn_model.to(device)
     encoder.to(device)
     decoder.to(device)
 
-    # optionally fine-tune encoder, always freeze decoder
+    # fine-tune encoder, keep decoder frozen for stable reconstructions
+    for p in encoder.parameters():
+        p.requires_grad = True
     for p in decoder.parameters():
         p.requires_grad = False
+    encoder.train()
     decoder.eval()
 
-    if tf_cfg.FINE_TUNE_ENCODER:
-        encoder.train()
-    else:
-        for p in encoder.parameters():
-            p.requires_grad = False
-        encoder.eval()
-
-    trainable_params = list(dyn_model.parameters())
-    if tf_cfg.FINE_TUNE_ENCODER:
-        trainable_params += list(encoder.parameters())
-
-    optimizer = torch.optim.Adam(trainable_params, lr=lr)
+    optimizer = torch.optim.Adam(
+        list(dyn_model.parameters()) + list(encoder.parameters()), lr=lr
+    )
     mse = nn.MSELoss()
 
     best_val_loss = float("inf")
@@ -192,57 +176,53 @@ def train_transformer(dyn_model, encoder, decoder,
         return tf_cfg.TEACHER_FORCING_INIT + alpha * (tf_cfg.TEACHER_FORCING_FINAL - tf_cfg.TEACHER_FORCING_INIT)
 
     for epoch in range(1, num_epochs + 1):
-        tf_ratio = teacher_force_prob(epoch)
-        if tf_cfg.FINE_TUNE_ENCODER:
-            encoder.train()
-
+        # linear decay of teacher forcing
+        tf_ratio = teacher_forcing_end + (teacher_forcing_start - teacher_forcing_end) * max(0.0, (num_epochs - epoch) / max(1, num_epochs - 1))
         # -------------------
         # Train
         # -------------------
         dyn_model.train()
+        encoder.train()
         train_loss = 0.0
         for batch in train_loader:
             x_in  = batch["x_in"].to(device)   # (B, T, x_dim)
             x_out = batch["x_out"].to(device)  # (B, H, x_dim)
-            t0    = batch["t0"].to(device)     # (B,)
-            B, H, _ = x_out.shape
 
             optimizer.zero_grad()
 
-            z_context = encoder(x_in)  # (B,T,d)
-            if tf_cfg.LATENT_NOISE_STD > 0:
-                z_context = z_context + tf_cfg.LATENT_NOISE_STD * torch.randn_like(z_context)
+            z_seq = encoder(x_in)                 # (B,T,d)
+            z_out_all = encoder(x_out.view(-1, x_out.size(-1)))
+            z_out_all = z_out_all.view(x_out.size(0), x_out.size(1), -1)
 
-            with torch.no_grad():
-                z_targets = encoder(x_out.reshape(B * H, x_in.shape[-1])).view(B, H, -1)
-
-            position_ctx = t0.unsqueeze(1) + torch.arange(seq_len, device=device).unsqueeze(0)
+            if latent_noise_std > 0.0:
+                z_seq = z_seq + torch.randn_like(z_seq) * latent_noise_std
 
             loss_latent = 0.0
             loss_x = 0.0
+            pos_cursor = z_seq.size(1) - 1
 
-            for step in range(H):
-                pos_slice = position_ctx[:, -z_context.size(1):]
-                z_next_pred = dyn_model(z_context, position_ids=pos_slice)  # (B,d)
+            for h in range(horizon):
+                start_pos = max(0, pos_cursor - z_seq.size(1) + 1)
+                z_next_pred = dyn_model(z_seq, pos_offset=start_pos)  # (B,d)
+
+                z_next_true = z_out_all[:, h, :]
+                loss_latent = loss_latent + mse(z_next_pred, z_next_true)
+
                 x_next_pred = decoder(z_next_pred)
+                x_next_true = x_out[:, h, :]
+                loss_x = loss_x + mse(x_next_pred, x_next_true)
 
-                z_target = z_targets[:, step, :]
-                x_target = x_out[:, step, :]
+                use_teacher = torch.rand(1, device=device) < tf_ratio
+                z_feed = z_next_true if use_teacher else z_next_pred
 
-                loss_latent = loss_latent + mse(z_next_pred, z_target)
-                loss_x = loss_x + mse(x_next_pred, x_target)
+                z_seq = torch.cat([z_seq, z_feed.unsqueeze(1)], dim=1)
+                z_seq = z_seq[:, -seq_len:, :]
+                pos_cursor += 1
 
-                use_teacher = (torch.rand(B, device=device) < tf_ratio).float().unsqueeze(1)
-                z_next_ctx = use_teacher * z_target + (1 - use_teacher) * z_next_pred.detach()
+            loss_latent = loss_latent / horizon
+            loss_x = loss_x / horizon
 
-                z_context = torch.cat([z_context, z_next_ctx.unsqueeze(1)], dim=1)
-                z_context = z_context[:, -seq_len:, :]
-
-                next_pos = position_ctx[:, -1:] + 1
-                position_ctx = torch.cat([position_ctx, next_pos], dim=1)
-                position_ctx = position_ctx[:, -seq_len:]
-
-            loss = (loss_latent + tf_cfg.LOSS_X_WEIGHT * loss_x) / H
+            loss = loss_latent + x_weight * loss_x
             loss.backward()
 
             if tf_cfg.GRAD_CLIP > 0:
@@ -266,32 +246,32 @@ def train_transformer(dyn_model, encoder, decoder,
                 t0    = batch["t0"].to(device)
                 B, H, _ = x_out.shape
 
-                z_context = encoder(x_in)
-                z_targets = encoder(x_out.reshape(B * H, x_in.shape[-1])).view(B, H, -1)
-                position_ctx = t0.unsqueeze(1) + torch.arange(seq_len, device=device).unsqueeze(0)
+                z_seq = encoder(x_in)
+                z_out_all = encoder(x_out.view(-1, x_out.size(-1)))
+                z_out_all = z_out_all.view(x_out.size(0), x_out.size(1), -1)
 
                 loss_latent = 0.0
                 loss_x = 0.0
+                pos_cursor = z_seq.size(1) - 1
 
-                for step in range(H):
-                    pos_slice = position_ctx[:, -z_context.size(1):]
-                    z_next_pred = dyn_model(z_context, position_ids=pos_slice)
+                for h in range(horizon):
+                    start_pos = max(0, pos_cursor - z_seq.size(1) + 1)
+                    z_next_pred = dyn_model(z_seq, pos_offset=start_pos)
+                    z_next_true = z_out_all[:, h, :]
+                    loss_latent = loss_latent + mse(z_next_pred, z_next_true)
+
                     x_next_pred = decoder(z_next_pred)
+                    x_next_true = x_out[:, h, :]
+                    loss_x = loss_x + mse(x_next_pred, x_next_true)
 
-                    z_target = z_targets[:, step, :]
-                    x_target = x_out[:, step, :]
+                    z_seq = torch.cat([z_seq, z_next_pred.unsqueeze(1)], dim=1)
+                    z_seq = z_seq[:, -seq_len:, :]
+                    pos_cursor += 1
 
-                    loss_latent = loss_latent + mse(z_next_pred, z_target)
-                    loss_x = loss_x + mse(x_next_pred, x_target)
+                loss_latent = loss_latent / horizon
+                loss_x = loss_x / horizon
 
-                    z_context = torch.cat([z_context, z_target.unsqueeze(1)], dim=1)
-                    z_context = z_context[:, -seq_len:, :]
-
-                    next_pos = position_ctx[:, -1:] + 1
-                    position_ctx = torch.cat([position_ctx, next_pos], dim=1)
-                    position_ctx = position_ctx[:, -seq_len:]
-
-                loss = (loss_latent + tf_cfg.LOSS_X_WEIGHT * loss_x) / H
+                loss = loss_latent + x_weight * loss_x
                 val_loss += loss.item() * x_in.size(0)
 
         val_loss /= len(val_loader.dataset)
@@ -306,6 +286,7 @@ def train_transformer(dyn_model, encoder, decoder,
                 {
                     "epoch": epoch,
                     "model_state_dict": dyn_model.state_dict(),
+                    "encoder_state_dict": encoder.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_loss": val_loss,
                 },
@@ -392,15 +373,18 @@ def rollout_transformer(x_init_norm, n_steps, encoder, decoder, dyn_model, devic
     with torch.no_grad():
         z_seq = encoder(x_init_t).unsqueeze(0)  # (1, T0, d)
         x_list = [x_init_t]  # first block: (T0, x_dim)
+        pos_cursor = z_seq.size(1) - 1
 
         for _ in range(n_steps):
-            z_next = dyn_model(z_seq)      # (1,d)
+            start_pos = max(0, pos_cursor - z_seq.size(1) + 1)
+            z_next = dyn_model(z_seq, pos_offset=start_pos)      # (1,d)
             x_next = decoder(z_next)       # (1,x_dim)
             x_list.append(x_next)          # keep 2D
 
             # update latent sequence, keep last T0 states
             z_seq = torch.cat([z_seq, z_next.unsqueeze(1)], dim=1)  # (1,T0+1,d)
             z_seq = z_seq[:, -T0:, :]                              # (1,T0,d)
+            pos_cursor += 1
 
         x_pred_all = torch.cat(x_list, dim=0)  # (T0 + n_steps, x_dim)
 
@@ -507,6 +491,10 @@ def main():
     BATCH_SIZE = tf_cfg.BATCH_SIZE
     EPOCHS     = tf_cfg.EPOCHS
     LR         = tf_cfg.LR
+    X_WEIGHT   = tf_cfg.X_WEIGHT
+    TEACHER_FORCING_START = tf_cfg.TEACHER_FORCING_START
+    TEACHER_FORCING_END   = tf_cfg.TEACHER_FORCING_END
+    LATENT_NOISE_STD      = tf_cfg.LATENT_NOISE_STD
 
     ROLLOUT_STEPS = tf_cfg.ROLLOUT_STEPS
     
@@ -573,12 +561,10 @@ def main():
         f.write(f"DIM_FEEDFORWARD: {DIM_FEEDFORWARD}\n")
         f.write(f"DROPOUT: {DROPOUT}\n")
         f.write(f"ROLLOUT_STEPS: {ROLLOUT_STEPS}\n")
-        f.write(f"LOSS_X_WEIGHT: {tf_cfg.LOSS_X_WEIGHT}\n")
-        f.write(f"TEACHER_FORCING_INIT: {tf_cfg.TEACHER_FORCING_INIT}\n")
-        f.write(f"TEACHER_FORCING_FINAL: {tf_cfg.TEACHER_FORCING_FINAL}\n")
-        f.write(f"LATENT_NOISE_STD: {tf_cfg.LATENT_NOISE_STD}\n")
-        f.write(f"FINE_TUNE_ENCODER: {tf_cfg.FINE_TUNE_ENCODER}\n")
-        f.write(f"GRAD_CLIP: {tf_cfg.GRAD_CLIP}\n")
+        f.write(f"X_WEIGHT: {X_WEIGHT}\n")
+        f.write(f"TEACHER_FORCING_START: {TEACHER_FORCING_START}\n")
+        f.write(f"TEACHER_FORCING_END: {TEACHER_FORCING_END}\n")
+        f.write(f"LATENT_NOISE_STD: {LATENT_NOISE_STD}\n")
     
     # 5) Initialize (or reuse) Transformer
     if args.reuse_transformer:
@@ -601,6 +587,8 @@ def main():
         ).to(DEVICE)
 
         dyn_model.load_state_dict(ckpt_tf["model_state_dict"], strict=False)
+        if "encoder_state_dict" in ckpt_tf:
+            encoder.load_state_dict(ckpt_tf["encoder_state_dict"], strict=False)
         dyn_model.eval()
 
         # best_val_loss comes from the reused checkpoint (may be NaN if missing)
@@ -637,13 +625,19 @@ def main():
             t_eval=t_eval,
             seq_len=SEQ_LEN,
             rollout_steps=ROLLOUT_STEPS,
-            tf_cfg=tf_cfg,
+            horizon=HORIZON,
+            x_weight=X_WEIGHT,
+            teacher_forcing_start=TEACHER_FORCING_START,
+            teacher_forcing_end=TEACHER_FORCING_END,
+            latent_noise_std=LATENT_NOISE_STD,
         )
 
         # After training, reload the best checkpoint (for final eval/plots)
         tf_ckpt = torch.load(os.path.join(out_dir, "transformer_best.pt"),
                              map_location=DEVICE)
         dyn_model.load_state_dict(tf_ckpt["model_state_dict"])
+        if "encoder_state_dict" in tf_ckpt:
+            encoder.load_state_dict(tf_ckpt["encoder_state_dict"], strict=False)
         dyn_model.to(DEVICE)
 
     print(f"Best Transformer val loss: {best_val_loss:.4e}")
