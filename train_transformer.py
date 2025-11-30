@@ -73,6 +73,7 @@ class WindowedSequenceDataset(Dataset):
         return {
             "x_in":  torch.from_numpy(x_in.astype(np.float32)),
             "x_out": torch.from_numpy(x_out.astype(np.float32)),
+            "t0": torch.tensor(t0, dtype=torch.long),
         }
 
 # ============================================================
@@ -126,6 +127,7 @@ class LatentTransformer(nn.Module):
     def forward(self, z_seq, pos_offset: int = 0):
         """
         z_seq: (B, T, latent_dim)
+        position_ids: None or (B, T) absolute positions for PE slicing
         returns z_next_pred: (B, latent_dim)
         """
         z_seq = self.input_norm(z_seq)
@@ -166,6 +168,12 @@ def train_transformer(dyn_model, encoder, decoder,
 
     best_val_loss = float("inf")
     history = {"train": [], "val": []}
+
+    def teacher_force_prob(epoch_idx: int) -> float:
+        if num_epochs == 1:
+            return tf_cfg.TEACHER_FORCING_FINAL
+        alpha = (epoch_idx - 1) / (num_epochs - 1)
+        return tf_cfg.TEACHER_FORCING_INIT + alpha * (tf_cfg.TEACHER_FORCING_FINAL - tf_cfg.TEACHER_FORCING_INIT)
 
     for epoch in range(1, num_epochs + 1):
         # linear decay of teacher forcing
@@ -216,14 +224,17 @@ def train_transformer(dyn_model, encoder, decoder,
 
             loss = loss_latent + x_weight * loss_x
             loss.backward()
-            optimizer.step()
 
+            if tf_cfg.GRAD_CLIP > 0:
+                torch.nn.utils.clip_grad_norm_(trainable_params, tf_cfg.GRAD_CLIP)
+
+            optimizer.step()
             train_loss += loss.item() * x_in.size(0)
 
         train_loss /= len(train_loader.dataset)
 
         # -------------------
-        # Validation
+        # Validation (full teacher forcing)
         # -------------------
         dyn_model.eval()
         encoder.eval()
@@ -232,6 +243,8 @@ def train_transformer(dyn_model, encoder, decoder,
             for batch in val_loader:
                 x_in  = batch["x_in"].to(device)
                 x_out = batch["x_out"].to(device)
+                t0    = batch["t0"].to(device)
+                B, H, _ = x_out.shape
 
                 z_seq = encoder(x_in)
                 z_out_all = encoder(x_out.view(-1, x_out.size(-1)))
@@ -280,8 +293,15 @@ def train_transformer(dyn_model, encoder, decoder,
                 os.path.join(out_dir, "transformer_best.pt"),
             )
 
+            # Save encoder snapshot when fine-tuning
+            if tf_cfg.FINE_TUNE_ENCODER:
+                torch.save(
+                    {"encoder_state_dict": encoder.state_dict()},
+                    os.path.join(out_dir, "encoder_best.pt"),
+                )
+
         if epoch % 5 == 0 or epoch == 1 or epoch == num_epochs:
-            print(f"[Transformer] Epoch {epoch:03d} | Train: {train_loss:.4e} | Val: {val_loss:.4e}")
+            print(f"[Transformer] Epoch {epoch:03d} | Train: {train_loss:.4e} | Val: {val_loss:.4e} | TF prob: {tf_ratio:.2f}")
 
         if epoch % 2 == 0:
             plot_rollout_example_2d_orbit(
@@ -305,7 +325,7 @@ def train_transformer(dyn_model, encoder, decoder,
 # ============================================================
 # Evaluation utilities
 # ============================================================
-def one_step_mse_xspace(encoder, decoder, dyn_model, data_loader, device):
+def one_step_mse_xspace(encoder, decoder, dyn_model, data_loader, device, seq_len):
     encoder.eval()
     decoder.eval()
     dyn_model.eval()
@@ -317,10 +337,13 @@ def one_step_mse_xspace(encoder, decoder, dyn_model, data_loader, device):
         for batch in data_loader:
             x_in  = batch["x_in"].to(device)
             x_out = batch["x_out"].to(device)
+            t0    = batch["t0"].to(device)
+
+            position_ctx = t0.unsqueeze(1) + torch.arange(seq_len, device=device).unsqueeze(0)
 
             z_seq = encoder(x_in)
             z_next_true = encoder(x_out[:, 0, :])
-            z_next_pred = dyn_model(z_seq)
+            z_next_pred = dyn_model(z_seq, position_ids=position_ctx)
 
             x_next_true = x_out[:, 0, :]
             x_next_pred = decoder(z_next_pred)
@@ -474,7 +497,6 @@ def main():
     LATENT_NOISE_STD      = tf_cfg.LATENT_NOISE_STD
 
     ROLLOUT_STEPS = tf_cfg.ROLLOUT_STEPS
-    max_len_tf    = SEQ_LEN + ROLLOUT_STEPS + tf_cfg.MAX_LEN_EXTRA
     
     # 1) Load dataset
     ds_file = find_latest_dataset(data_dir=EXP_DATA_ROOT)
@@ -493,6 +515,8 @@ def main():
     print(f"Train_norm shape: {train_norm.shape}")
     print(f"Val_norm shape:   {val_norm.shape}")
     print(f"Test_norm shape:  {test_norm.shape}")
+
+    max_len_tf = max(T_total + ROLLOUT_STEPS, SEQ_LEN + ROLLOUT_STEPS) + tf_cfg.MAX_LEN_EXTRA
 
     # 2) Load latest KoopmanAE (from train_koopman_ae.py)
     koopman_dir, koopman_ckpt_path = find_latest_koopman(output_dir=EXP_OUTPUT_ROOT)
@@ -620,7 +644,7 @@ def main():
 
     # 7) One-step MSE in x-space on test set
     test_one_step_mse = one_step_mse_xspace(
-        encoder, decoder, dyn_model, test_loader, DEVICE
+        encoder, decoder, dyn_model, test_loader, DEVICE, SEQ_LEN
     )
     print(f"One-step MSE in x-space (test): {test_one_step_mse:.4e}")
     with open(os.path.join(out_dir, "metrics.txt"), "w") as f:
