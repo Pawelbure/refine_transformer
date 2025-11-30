@@ -55,6 +55,12 @@ class TransformerConfig:
     EPOCHS: int
     ROLLOUT_STEPS: int  # long rollout horizon used in eval
     MAX_LEN_EXTRA: int  # extra margin for positional encoding length
+    LOSS_X_WEIGHT: float
+    TEACHER_FORCING_INIT: float
+    TEACHER_FORCING_FINAL: float
+    LATENT_NOISE_STD: float
+    FINE_TUNE_ENCODER: bool
+    GRAD_CLIP: float
 
 
 @dataclass
@@ -94,7 +100,7 @@ EXPERIMENTS["experiment1_2025-11-28"] = ExperimentConfig(
     ),
     dataset=DatasetConfig(
         SEQ_LEN=500,
-        HORIZON=1,
+        HORIZON=8,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
@@ -111,13 +117,19 @@ EXPERIMENTS["experiment1_2025-11-28"] = ExperimentConfig(
         LATENT_DIM=8,       # must match koopman.LATENT_DIM
         NHEAD=4,
         NUM_LAYERS=4,
-        DIM_FEEDFORWARD=128,
-        DROPOUT=0.0,
+        DIM_FEEDFORWARD=256,
+        DROPOUT=0.1,
         LR=1e-3,
         BATCH_SIZE=32,
-        EPOCHS=20,
+        EPOCHS=40,
         ROLLOUT_STEPS=20,
-        MAX_LEN_EXTRA=10,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
+        MAX_LEN_EXTRA=200,   # PE length >= T_total + margin for offset-aware PE
+        LOSS_X_WEIGHT=1.5,
+        TEACHER_FORCING_INIT=1.0,
+        TEACHER_FORCING_FINAL=0.2,
+        LATENT_NOISE_STD=0.01,
+        FINE_TUNE_ENCODER=True,
+        GRAD_CLIP=1.0,
     ),
     eval=EvalConfig(
         OOD_ROLLOUT_STEPS=400,
@@ -137,7 +149,7 @@ EXPERIMENTS["experiment2_2025-11-28_high-variance"] = ExperimentConfig(
     ),
     dataset=DatasetConfig(
         SEQ_LEN=400,
-        HORIZON=1,
+        HORIZON=8,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
@@ -154,13 +166,19 @@ EXPERIMENTS["experiment2_2025-11-28_high-variance"] = ExperimentConfig(
         LATENT_DIM=8,       # must match koopman.LATENT_DIM
         NHEAD=4,
         NUM_LAYERS=4,
-        DIM_FEEDFORWARD=128,
-        DROPOUT=0.0,
+        DIM_FEEDFORWARD=256,
+        DROPOUT=0.1,
         LR=1e-3,
         BATCH_SIZE=64,
-        EPOCHS=4,
+        EPOCHS=12,
         ROLLOUT_STEPS=100,
-        MAX_LEN_EXTRA=10,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
+        MAX_LEN_EXTRA=200,   # PE length >= T_total + margin for offset-aware PE
+        LOSS_X_WEIGHT=1.5,
+        TEACHER_FORCING_INIT=1.0,
+        TEACHER_FORCING_FINAL=0.3,
+        LATENT_NOISE_STD=0.02,
+        FINE_TUNE_ENCODER=True,
+        GRAD_CLIP=1.0,
     ),
     eval=EvalConfig(
         OOD_ROLLOUT_STEPS=400,
@@ -180,7 +198,7 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
     ),
     dataset=DatasetConfig(
         SEQ_LEN=50,
-        HORIZON=1,
+        HORIZON=4,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
@@ -198,12 +216,18 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         NHEAD=4,
         NUM_LAYERS=4,
         DIM_FEEDFORWARD=128,
-        DROPOUT=0.0,
+        DROPOUT=0.05,
         LR=1e-3,
         BATCH_SIZE=64,
         EPOCHS=30,
         ROLLOUT_STEPS=100,
-        MAX_LEN_EXTRA=10,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
+        MAX_LEN_EXTRA=50,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
+        LOSS_X_WEIGHT=1.5,
+        TEACHER_FORCING_INIT=1.0,
+        TEACHER_FORCING_FINAL=0.4,
+        LATENT_NOISE_STD=0.0,
+        FINE_TUNE_ENCODER=True,
+        GRAD_CLIP=1.0,
     ),
     eval=EvalConfig(
         OOD_ROLLOUT_STEPS=400,
