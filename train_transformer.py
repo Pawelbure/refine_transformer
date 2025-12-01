@@ -75,7 +75,7 @@ class WindowedSequenceDataset(Dataset):
             "x_out": torch.from_numpy(x_out.astype(np.float32)),
             "t0": torch.tensor(t0, dtype=torch.long),
         }
-
+    
 # ============================================================
 # Transformer in latent space
 # ============================================================
