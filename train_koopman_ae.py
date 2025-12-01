@@ -491,6 +491,11 @@ def main():
         default=DEFAULT_EXPERIMENT,
         help="Name of experiment configuration to use.",
     )
+    parser.add_argument(
+        "--reuse_koopman",
+        action="store_true",
+        help="Reuse the most recently trained KoopmanAE model if available.",
+    )
     args = parser.parse_args()
 
     cfg      = get_experiment_config(args.experiment)
@@ -576,12 +581,19 @@ def main():
         last_ckpt = os.path.join(last_dir, "koopman_ae_best.pt")
 
         if os.path.exists(last_ckpt):
-            print(f"\nA previously trained KoopmanAE was found:")
-            print(f"  {last_ckpt}")
-            choice = input("Reuse the latest trained model instead of retraining? [y/n]: ").strip().lower()
-            if choice == "y":
+            if args.reuse_koopman:
+                print(f"\nReusing existing KoopmanAE checkpoint: {last_ckpt}")
                 reuse_model = True
                 reuse_path = last_ckpt
+            else:
+                print(f"\nA previously trained KoopmanAE was found:")
+                print(f"  {last_ckpt}")
+                choice = input("Reuse the latest trained model instead of retraining? [y/n]: ").strip().lower()
+                if choice == "y":
+                    reuse_model = True
+                    reuse_path = last_ckpt
+        elif args.reuse_koopman:
+            print("\n--reuse_koopman was provided, but no previous checkpoint was found. Proceeding to train a new model.\n")
 
     # ------------------------------------------------------
     # 4) Build KoopmanAE and train or reuse
@@ -615,14 +627,17 @@ def main():
             rollout_steps=ROLLOUT_STEPS,
             orbit_plot_every=2,
         )
-        
+
     print(f"Best validation loss: {best_val_loss:.4e}")
-    print(f"Saved model and loss curves in: {out_dir}")
+    if reuse_model:
+        print(f"Using existing model from: {reuse_path}")
+    else:
+        print(f"Saved model and loss curves in: {out_dir}")
 
     # 5) Koopman rollout sanity-check plot
     #    Reload best model (just to be clean)
-    ckpt = torch.load(os.path.join(out_dir, "koopman_ae_best.pt"),
-                      map_location=DEVICE)
+    ckpt_path = reuse_path if reuse_model else os.path.join(out_dir, "koopman_ae_best.pt")
+    ckpt = torch.load(ckpt_path, map_location=DEVICE)
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(DEVICE)
 
