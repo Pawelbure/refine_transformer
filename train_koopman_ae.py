@@ -565,29 +565,24 @@ def main():
 
     reuse_model = False
     reuse_path = None
-    reuse_source_dir = prev_koopman_dirs[-1] if prev_koopman_dirs else None
-    reuse_source_ckpt = os.path.join(reuse_source_dir, "koopman_ae_best.pt") if reuse_source_dir else None
 
-    if reuse_source_dir and os.path.exists(reuse_source_ckpt):
-        if args.reuse_koopman:
-            print(f"\nReusing existing KoopmanAE checkpoint from: {reuse_source_ckpt}")
-            shutil.copytree(reuse_source_dir, out_dir, dirs_exist_ok=True)
-            reuse_model = True
-            reuse_path = os.path.join(out_dir, "koopman_ae_best.pt")
-            print(f"Copied previous KoopmanAE outputs into new run directory: {out_dir}")
-        else:
-            print(f"\nA previously trained KoopmanAE was found:")
-            print(f"  {reuse_source_ckpt}")
-            choice = input("Reuse the latest trained model instead of retraining? [y/n]: ").strip().lower()
-            if choice == "y":
-                shutil.copytree(reuse_source_dir, out_dir, dirs_exist_ok=True)
+    if koopman_dirs:
+        last_dir = koopman_dirs[-1]
+        last_ckpt = os.path.join(last_dir, "koopman_ae_best.pt")
+
+        if os.path.exists(last_ckpt):
+            if args.reuse_koopman:
+                print(f"\nReusing existing KoopmanAE checkpoint: {last_ckpt}")
                 reuse_model = True
-                reuse_path = os.path.join(out_dir, "koopman_ae_best.pt")
-                print(f"Copied previous KoopmanAE outputs into new run directory: {out_dir}")
-    elif args.reuse_koopman:
-        if reuse_source_dir:
-            print(f"\n--reuse_koopman was provided, but no checkpoint was found in: {reuse_source_dir}. Proceeding to train a new model.\n")
-        else:
+                reuse_path = last_ckpt
+            else:
+                print(f"\nA previously trained KoopmanAE was found:")
+                print(f"  {last_ckpt}")
+                choice = input("Reuse the latest trained model instead of retraining? [y/n]: ").strip().lower()
+                if choice == "y":
+                    reuse_model = True
+                    reuse_path = last_ckpt
+        elif args.reuse_koopman:
             print("\n--reuse_koopman was provided, but no previous checkpoint was found. Proceeding to train a new model.\n")
 
     # ------------------------------------------------------
@@ -622,25 +617,6 @@ def main():
             rollout_steps=ROLLOUT_STEPS,
             orbit_plot_every=2,
         )
-
-    # Save or augment meta info about this run
-    koopman_info_path = os.path.join(out_dir, "koopman_info.txt")
-    if reuse_model:
-        with open(koopman_info_path, "a") as f:
-            f.write("\n")
-            f.write(f"Reused checkpoint from: {reuse_source_dir}\n")
-            f.write(f"Reuse invocation dataset file: {ds_file}\n")
-    else:
-        with open(koopman_info_path, "w") as f:
-            f.write(f"Dataset file: {ds_file}\n")
-            f.write(f"SEQ_LEN: {SEQ_LEN}\n")
-            f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
-            f.write(f"EPOCHS: {EPOCHS}\n")
-            f.write(f"LR: {LR}\n")
-            f.write(f"LATENT_DIM: {LATENT_DIM}\n")
-            f.write(f"HIDDEN_DIM: {HIDDEN_DIM}\n")
-            f.write(f"KOOPMAN_LAMBDA: {KOOPMAN_LAMBDA}\n")
-            f.write(f"K_MAX: {K_MAX}\n")
 
     print(f"Best validation loss: {best_val_loss:.4e}")
     if reuse_model:
