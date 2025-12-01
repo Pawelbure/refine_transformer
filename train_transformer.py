@@ -155,17 +155,19 @@ def train_transformer(dyn_model, encoder, decoder,
     encoder.to(device)
     decoder.to(device)
 
-    # fine-tune encoder, keep decoder frozen for stable reconstructions
+    # fine-tune encoder optionally, keep decoder frozen for stable reconstructions
     for p in encoder.parameters():
-        p.requires_grad = True
+        p.requires_grad = bool(fine_tune_encoder)
     for p in decoder.parameters():
         p.requires_grad = False
     encoder.train()
     decoder.eval()
 
-    optimizer = torch.optim.Adam(
-        list(dyn_model.parameters()) + list(encoder.parameters()), lr=lr
-    )
+    trainable_params = list(dyn_model.parameters())
+    if fine_tune_encoder:
+        trainable_params += list(encoder.parameters())
+
+    optimizer = torch.optim.Adam(trainable_params, lr=lr)
     mse = nn.MSELoss()
 
     best_val_loss = float("inf")

@@ -59,6 +59,8 @@ class TransformerConfig:
     TEACHER_FORCING_START: float
     TEACHER_FORCING_END: float
     LATENT_NOISE_STD: float
+    GRAD_CLIP: float = 0.0
+    FINE_TUNE_ENCODER: bool = False
 
 
 @dataclass
