@@ -10,6 +10,7 @@
 import os
 import glob
 import math
+import shutil
 from datetime import datetime
 import argparse
 
@@ -553,25 +554,14 @@ def main():
     out_dir = os.path.join(EXP_OUTPUT_ROOT, f"koopman_ae_{time_tag}")
     os.makedirs(out_dir, exist_ok=True)
 
-    # Save a copy of some meta info
-    with open(os.path.join(out_dir, "koopman_info.txt"), "w") as f:
-        f.write(f"Dataset file: {ds_file}\n")
-        f.write(f"SEQ_LEN: {SEQ_LEN}\n")
-        f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
-        f.write(f"EPOCHS: {EPOCHS}\n")
-        f.write(f"LR: {LR}\n")
-        f.write(f"LATENT_DIM: {LATENT_DIM}\n")
-        f.write(f"HIDDEN_DIM: {HIDDEN_DIM}\n")
-        f.write(f"KOOPMAN_LAMBDA: {KOOPMAN_LAMBDA}\n")
-        f.write(f"K_MAX: {K_MAX}\n")
-
     # ------------------------------------------------------
     # Ask whether to reuse the latest trained KoopmanAE model
     # ------------------------------------------------------
-    # Find latest KoopmanAE experiment folder
+    # Find latest KoopmanAE experiment folder (excluding the fresh dir we just made)
     koopman_dirs = sorted(
         glob.glob(os.path.join(EXP_OUTPUT_ROOT, "koopman_ae_*"))
     )
+    prev_koopman_dirs = [d for d in koopman_dirs if os.path.abspath(d) != os.path.abspath(out_dir)]
 
     reuse_model = False
     reuse_path = None
