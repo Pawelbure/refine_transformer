@@ -59,6 +59,8 @@ class TransformerConfig:
     TEACHER_FORCING_START: float
     TEACHER_FORCING_END: float
     LATENT_NOISE_STD: float
+    GRAD_CLIP: float = 0.0
+    FINE_TUNE_ENCODER: bool = False
 
 
 @dataclass
@@ -98,7 +100,7 @@ EXPERIMENTS["experiment1_2025-11-28"] = ExperimentConfig(
     ),
     dataset=DatasetConfig(
         SEQ_LEN=500,
-        HORIZON=5,
+        HORIZON=20,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
@@ -123,8 +125,8 @@ EXPERIMENTS["experiment1_2025-11-28"] = ExperimentConfig(
         ROLLOUT_STEPS=40,
         MAX_LEN_EXTRA=20,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
         X_WEIGHT=1.5,
-        TEACHER_FORCING_START=1.0,
-        TEACHER_FORCING_END=0.2,
+        TEACHER_FORCING_START=0.9,
+        TEACHER_FORCING_END=0.0,
         LATENT_NOISE_STD=0.01,
     ),
     eval=EvalConfig(
@@ -145,7 +147,7 @@ EXPERIMENTS["experiment2_2025-11-28_high-variance"] = ExperimentConfig(
     ),
     dataset=DatasetConfig(
         SEQ_LEN=400,
-        HORIZON=5,
+        HORIZON=15,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
@@ -170,8 +172,8 @@ EXPERIMENTS["experiment2_2025-11-28_high-variance"] = ExperimentConfig(
         ROLLOUT_STEPS=120,
         MAX_LEN_EXTRA=20,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
         X_WEIGHT=1.5,
-        TEACHER_FORCING_START=1.0,
-        TEACHER_FORCING_END=0.2,
+        TEACHER_FORCING_START=0.9,
+        TEACHER_FORCING_END=0.0,
         LATENT_NOISE_STD=0.015,
     ),
     eval=EvalConfig(
@@ -192,7 +194,7 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
     ),
     dataset=DatasetConfig(
         SEQ_LEN=50,
-        HORIZON=3,
+        HORIZON=10,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
@@ -217,8 +219,8 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         ROLLOUT_STEPS=120,
         MAX_LEN_EXTRA=20,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
         X_WEIGHT=1.5,
-        TEACHER_FORCING_START=1.0,
-        TEACHER_FORCING_END=0.2,
+        TEACHER_FORCING_START=0.9,
+        TEACHER_FORCING_END=0.0,
         LATENT_NOISE_STD=0.01,
     ),
     eval=EvalConfig(
