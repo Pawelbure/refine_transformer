@@ -148,7 +148,9 @@ def train_transformer(dyn_model, encoder, decoder,
                       x_weight=1.0,
                       teacher_forcing_start=1.0,
                       teacher_forcing_end=0.2,
-                      latent_noise_std=0.0):
+                      latent_noise_std=0.0,
+                      grad_clip=0.0,
+                      fine_tune_encoder=False):
     dyn_model.to(device)
     encoder.to(device)
     decoder.to(device)
@@ -171,9 +173,9 @@ def train_transformer(dyn_model, encoder, decoder,
 
     def teacher_force_prob(epoch_idx: int) -> float:
         if num_epochs == 1:
-            return tf_cfg.TEACHER_FORCING_FINAL
+            return teacher_forcing_end
         alpha = (epoch_idx - 1) / (num_epochs - 1)
-        return tf_cfg.TEACHER_FORCING_INIT + alpha * (tf_cfg.TEACHER_FORCING_FINAL - tf_cfg.TEACHER_FORCING_INIT)
+        return teacher_forcing_start + alpha * (teacher_forcing_end - teacher_forcing_start)
 
     for epoch in range(1, num_epochs + 1):
         # linear decay of teacher forcing
@@ -225,8 +227,8 @@ def train_transformer(dyn_model, encoder, decoder,
             loss = loss_latent + x_weight * loss_x
             loss.backward()
 
-            if tf_cfg.GRAD_CLIP > 0:
-                torch.nn.utils.clip_grad_norm_(trainable_params, tf_cfg.GRAD_CLIP)
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(trainable_params, grad_clip)
 
             optimizer.step()
             train_loss += loss.item() * x_in.size(0)
@@ -294,7 +296,7 @@ def train_transformer(dyn_model, encoder, decoder,
             )
 
             # Save encoder snapshot when fine-tuning
-            if tf_cfg.FINE_TUNE_ENCODER:
+            if fine_tune_encoder:
                 torch.save(
                     {"encoder_state_dict": encoder.state_dict()},
                     os.path.join(out_dir, "encoder_best.pt"),
@@ -630,6 +632,8 @@ def main():
             teacher_forcing_start=TEACHER_FORCING_START,
             teacher_forcing_end=TEACHER_FORCING_END,
             latent_noise_std=LATENT_NOISE_STD,
+            grad_clip=tf_cfg.GRAD_CLIP,
+            fine_tune_encoder=tf_cfg.FINE_TUNE_ENCODER,
         )
 
         # After training, reload the best checkpoint (for final eval/plots)
