@@ -578,24 +578,33 @@ def plot_koopman_training_samples(model, train_data_norm, state_mean, state_std,
 
         x_pred = x_pred_norm * state_std + state_mean
         x_true = x_true_norm * state_std + state_mean
-
-        x1_true, y1_true = x_true[:, 0], x_true[:, 1]
-        x2_true, y2_true = x_true[:, 2], x_true[:, 3]
-        x1_pred, y1_pred = x_pred[:, 0], x_pred[:, 1]
-        x2_pred, y2_pred = x_pred[:, 2], x_pred[:, 3]
+        x_dim = x_true.shape[1]
 
         plt.figure(figsize=(7, 7))
-        plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
-        plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
-
-        plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (K-rollout)", linewidth=1.5, color="C0")
-        plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (K-rollout)", linewidth=1.5, color="C1")
-
         idx_boundary = seq_len - 1
-        plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
-                    color="C0", marker="o", s=40, label="Start pred M1")
-        plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
-                    color="C1", marker="o", s=40, label="Start pred M2")
+
+        if x_dim >= 4:
+            x1_true, y1_true = x_true[:, 0], x_true[:, 1]
+            x2_true, y2_true = x_true[:, 2], x_true[:, 3]
+            x1_pred, y1_pred = x_pred[:, 0], x_pred[:, 1]
+            x2_pred, y2_pred = x_pred[:, 2], x_pred[:, 3]
+
+            plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
+            plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
+
+            plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (K-rollout)", linewidth=1.5, color="C0")
+            plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (K-rollout)", linewidth=1.5, color="C1")
+
+            plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
+                        color="C0", marker="o", s=40, label="Start pred M1")
+            plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
+                        color="C1", marker="o", s=40, label="Start pred M2")
+        else:
+            plt.plot(x_true[:, 0], x_true[:, 1], label="True", linewidth=1.5, color="C0")
+            plt.plot(x_pred[:, 0], x_pred[:, 1], "--", label="K-rollout", linewidth=1.5, color="C1")
+
+            plt.scatter(x_true[idx_boundary, 0], x_true[idx_boundary, 1],
+                        color="C0", marker="o", s=40, label="Prediction start")
 
         plt.title(f"KoopmanAE train sample {idx} (epoch {epoch:03d})")
         plt.xlabel("x")
