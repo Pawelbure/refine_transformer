@@ -143,7 +143,8 @@ class KoopmanAE(nn.Module):
 def train_koopman_ae(model, train_loader, val_loader,
                      num_epochs, koopman_lambda, k_max,
                      lr, device, out_dir,
-                     val_data_norm=None, state_mean=None, state_std=None,
+                     val_data_norm=None, train_data_norm=None,
+                     state_mean=None, state_std=None,
                      seq_len=None, rollout_steps=None, orbit_plot_every=None):
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -247,6 +248,28 @@ def train_koopman_ae(model, train_loader, val_loader,
                 out_dir=out_dir,
                 device=device,
                 epoch=epoch,
+            )
+
+        # Plot a handful of training samples every 2 epochs
+        if (
+            train_data_norm is not None
+            and epoch % 2 == 0
+            and state_mean is not None
+            and state_std is not None
+            and seq_len is not None
+            and rollout_steps is not None
+        ):
+            plot_koopman_training_samples(
+                model,
+                train_data_norm=train_data_norm,
+                state_mean=state_mean,
+                state_std=state_std,
+                seq_len=seq_len,
+                rollout_steps=rollout_steps,
+                out_dir=out_dir,
+                device=device,
+                epoch=epoch,
+                num_samples=10,
             )
             
         # Save best checkpoint
@@ -481,6 +504,72 @@ def plot_koopman_orbit_for_epoch(model, val_data_norm, state_mean, state_std,
     plt.savefig(fname)
     plt.close()
 
+
+def plot_koopman_training_samples(model, train_data_norm, state_mean, state_std,
+                                  seq_len, rollout_steps, out_dir, device,
+                                  epoch, num_samples=10):
+    """
+    Draw multiple random training trajectories and plot their Koopman rollouts
+    as 2D orbits. Results are saved under
+    out_dir/training_samples/{epoch}epochs/.
+    """
+    if train_data_norm.shape[0] == 0:
+        return
+
+    rng = np.random.default_rng(seed=epoch)
+    sample_indices = rng.choice(
+        train_data_norm.shape[0],
+        size=min(num_samples, train_data_norm.shape[0]),
+        replace=False,
+    )
+
+    epoch_dir = os.path.join(out_dir, "training_samples", f"{epoch}epochs")
+    os.makedirs(epoch_dir, exist_ok=True)
+
+    for idx in sample_indices:
+        x_traj_norm = train_data_norm[idx]
+        if x_traj_norm.shape[0] < seq_len + 1:
+            continue
+
+        steps = min(rollout_steps, max(1, x_traj_norm.shape[0] - seq_len - 1))
+        x_init_norm = x_traj_norm[:seq_len]
+
+        x_pred_norm = koopman_rollout(model, x_init_norm, steps, device)
+        x_true_norm = x_traj_norm[:seq_len + steps]
+
+        x_pred = x_pred_norm * state_std + state_mean
+        x_true = x_true_norm * state_std + state_mean
+
+        x1_true, y1_true = x_true[:, 0], x_true[:, 1]
+        x2_true, y2_true = x_true[:, 2], x_true[:, 3]
+        x1_pred, y1_pred = x_pred[:, 0], x_pred[:, 1]
+        x2_pred, y2_pred = x_pred[:, 2], x_pred[:, 3]
+
+        plt.figure(figsize=(7, 7))
+        plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
+        plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
+
+        plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (K-rollout)", linewidth=1.5, color="C0")
+        plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (K-rollout)", linewidth=1.5, color="C1")
+
+        idx_boundary = seq_len - 1
+        plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
+                    color="C0", marker="o", s=40, label="Start pred M1")
+        plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
+                    color="C1", marker="o", s=40, label="Start pred M2")
+
+        plt.title(f"KoopmanAE train sample {idx} (epoch {epoch:03d})")
+        plt.xlabel("x")
+        plt.ylabel("y")
+        plt.axis("equal")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+
+        fname = os.path.join(epoch_dir, f"koopman_train_sample_{idx}.png")
+        plt.savefig(fname)
+        plt.close()
+
 # ============================================================
 # Main
 # ============================================================
@@ -627,6 +716,7 @@ def main():
             out_dir=out_dir,
             # NEW: for orbit plotting during training
             val_data_norm=val_norm,
+            train_data_norm=train_norm,
             state_mean=state_mean,
             state_std=state_std,
             seq_len=SEQ_LEN,

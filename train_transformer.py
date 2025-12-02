@@ -153,7 +153,8 @@ class LatentTransformer(nn.Module):
 def train_transformer(dyn_model, encoder, decoder,
                       train_loader, val_loader,
                       num_epochs, lr, device, out_dir,
-                      test_norm, val_norm, state_mean, state_std,
+                      test_norm, val_norm, train_norm,
+                      state_mean, state_std,
                       t_eval, seq_len, rollout_steps,
                       horizon,
                       x_weight=1.0,
@@ -357,6 +358,20 @@ def train_transformer(dyn_model, encoder, decoder,
             )
 
         if epoch % 2 == 0:
+            plot_training_rollout_orbits(
+                train_norm=train_norm,
+                state_mean=state_mean,
+                state_std=state_std,
+                encoder=encoder,
+                decoder=decoder,
+                dyn_model=dyn_model,
+                seq_len=seq_len,
+                n_future=rollout_steps,
+                out_dir=out_dir,
+                device=device,
+                epoch=epoch,
+                num_samples=10,
+            )
             plot_rollout_example_2d_orbit(
                 test_norm=test_norm,
                 state_mean=state_mean,
@@ -482,6 +497,74 @@ def long_rollout_val_mse(val_norm, encoder, decoder, dyn_model, device, seq_len,
             n_used += 1
 
     return float("inf") if n_used == 0 else total_loss / n_used
+
+
+def plot_training_rollout_orbits(train_norm, state_mean, state_std, encoder, decoder,
+                                 dyn_model, seq_len, n_future, out_dir, device,
+                                 epoch, num_samples=10):
+    """
+    Plot rollout orbits for several random training trajectories every
+    few epochs to monitor in-distribution behavior. Saved under
+    out_dir/training_samples/{epoch}epochs/.
+    """
+    if train_norm.shape[0] == 0:
+        return
+
+    rng = np.random.default_rng(seed=epoch)
+    sample_indices = rng.choice(
+        train_norm.shape[0],
+        size=min(num_samples, train_norm.shape[0]),
+        replace=False,
+    )
+
+    epoch_dir = os.path.join(out_dir, "training_samples", f"{epoch}epochs")
+    os.makedirs(epoch_dir, exist_ok=True)
+
+    for idx in sample_indices:
+        x_traj_norm = train_norm[idx]
+        if x_traj_norm.shape[0] < seq_len + 1:
+            continue
+
+        steps = min(n_future, max(1, x_traj_norm.shape[0] - seq_len - 1))
+        x_init_norm = x_traj_norm[:seq_len]
+
+        x_pred_all_norm = rollout_transformer(
+            x_init_norm, steps, encoder, decoder, dyn_model, device
+        )
+        x_true_seg_norm = x_traj_norm[:seq_len + steps]
+
+        x_pred_all = x_pred_all_norm * state_std + state_mean
+        x_true_seg = x_true_seg_norm * state_std + state_mean
+
+        x1_true, y1_true = x_true_seg[:, 0], x_true_seg[:, 1]
+        x2_true, y2_true = x_true_seg[:, 2], x_true_seg[:, 3]
+        x1_pred, y1_pred = x_pred_all[:, 0], x_pred_all[:, 1]
+        x2_pred, y2_pred = x_pred_all[:, 2], x_pred_all[:, 3]
+
+        plt.figure(figsize=(7, 7))
+        plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
+        plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
+
+        plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (pred)", linewidth=1.5, color="C0")
+        plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (pred)", linewidth=1.5, color="C1")
+
+        idx_boundary = seq_len - 1
+        plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
+                    color="C0", marker="o", s=40, label="Start pred M1")
+        plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
+                    color="C1", marker="o", s=40, label="Start pred M2")
+
+        plt.title(f"Transformer train sample {idx} (epoch {epoch:03d})")
+        plt.xlabel("x")
+        plt.ylabel("y")
+        plt.axis("equal")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+
+        fname = os.path.join(epoch_dir, f"transformer_train_sample_{idx}.png")
+        plt.savefig(fname)
+        plt.close()
 
 
 def plot_rollout_example_2d_orbit(test_norm, state_mean, state_std, t_eval,
@@ -721,6 +804,7 @@ def main():
             device=DEVICE, out_dir=out_dir,
             test_norm=test_norm,
             val_norm=val_norm,
+            train_norm=train_norm,
             state_mean=state_mean,
             state_std=state_std,
             t_eval=t_eval,
