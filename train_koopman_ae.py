@@ -66,6 +66,11 @@ class WindowedTrajectoryDataset(Dataset):
         return torch.from_numpy(x_seq.astype(np.float32))
 
 
+# Backward compatibility: handle the historic misspelling used in older checkpoints
+# or scripts so that either name resolves to the same dataset class.
+WindowedTrajectoryDatset = WindowedTrajectoryDataset
+
+
 # ============================================================
 # Models: Encoder, Decoder, KoopmanAE
 # ============================================================
