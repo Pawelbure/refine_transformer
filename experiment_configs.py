@@ -203,7 +203,7 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         HIDDEN_DIM=128,
         LR=5e-4,
         BATCH_SIZE=48,
-        EPOCHS=60,
+        EPOCHS=200,
         KOOPMAN_LAMBDA=10.0,
         K_MAX=12,
     ),
@@ -215,7 +215,7 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         DROPOUT=0.1,
         LR=3e-4,
         BATCH_SIZE=48,
-        EPOCHS=80,
+        EPOCHS=300,
         ROLLOUT_STEPS=80,
         MAX_LEN_EXTRA=20,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
         X_WEIGHT=1.5,
