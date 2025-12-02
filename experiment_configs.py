@@ -190,7 +190,7 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         NUM_STEPS=320,
         NUM_TRAJECTORIES=40,
         NUM_TRAJ_OOD=3,
-        PERTURBATION=0.0,
+        PERTURBATION=0.1,
     ),
     dataset=DatasetConfig(
         SEQ_LEN=80,
