@@ -282,29 +282,6 @@ def train_koopman_ae(model, train_loader, val_loader,
                 num_samples=10,
                 sample_indices=train_sample_indices,
             )
-
-        # Plot a handful of training samples every 2 epochs
-        if (
-            train_data_norm is not None
-            and epoch % 2 == 0
-            and state_mean is not None
-            and state_std is not None
-            and seq_len is not None
-            and rollout_steps is not None
-        ):
-            plot_koopman_training_samples(
-                model,
-                train_data_norm=train_data_norm,
-                state_mean=state_mean,
-                state_std=state_std,
-                seq_len=seq_len,
-                rollout_steps=rollout_steps,
-                out_dir=out_dir,
-                device=device,
-                epoch=epoch,
-                num_samples=10,
-                sample_indices=train_sample_indices,
-            )
             
         # Save best checkpoint
         if val_loss < best_val_loss:
@@ -407,6 +384,7 @@ def plot_koopman_rollout_example(model, val_data_norm, state_mean, state_std,
     # Denormalize for plotting
     x_pred = x_pred_norm * state_std + state_mean
     x_true = x_true_norm * state_std + state_mean
+    x_dim = x_true.shape[1]
 
     # Time axis for this segment
     t_seg = t_eval[start_idx:start_idx + seq_len + rollout_steps]
@@ -414,10 +392,10 @@ def plot_koopman_rollout_example(model, val_data_norm, state_mean, state_std,
     # ----------------------------------------------------------
     # 1) Time-series plot: x1, y1, x2, y2 vs t
     # ----------------------------------------------------------
-    var_names = ["x1", "y1", "x2", "y2"]
-    plt.figure(figsize=(10, 8))
-    for i in range(4):
-        plt.subplot(4, 1, i + 1)
+    var_names = ["x1", "y1", "x2", "y2"] if x_dim == 4 else [f"x{i}" for i in range(x_dim)]
+    plt.figure(figsize=(10, 2 * x_dim))
+    for i in range(x_dim):
+        plt.subplot(x_dim, 1, i + 1)
         plt.plot(t_seg, x_true[:, i], label="True", linewidth=1.5)
         plt.plot(t_seg, x_pred[:, i], "--", label="Koopman rollout", linewidth=1.2)
 
@@ -430,7 +408,7 @@ def plot_koopman_rollout_example(model, val_data_norm, state_mean, state_std,
             plt.legend(loc="upper right", fontsize=8)
         plt.ylabel(var_names[i])
         plt.grid(True, alpha=0.3)
-        if i == 3:
+        if i == x_dim - 1:
             plt.xlabel("t")
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, "koopman_rollout_example.png"))
@@ -439,28 +417,34 @@ def plot_koopman_rollout_example(model, val_data_norm, state_mean, state_std,
     # ----------------------------------------------------------
     # 2) 2D orbit plot: (x1,y1) and (x2,y2), true vs rollout
     # ----------------------------------------------------------
-    x1_true, y1_true = x_true[:, 0], x_true[:, 1]
-    x2_true, y2_true = x_true[:, 2], x_true[:, 3]
-
-    x1_pred, y1_pred = x_pred[:, 0], x_pred[:, 1]
-    x2_pred, y2_pred = x_pred[:, 2], x_pred[:, 3]
-
     plt.figure(figsize=(7, 7))
-
-    # True orbits
-    plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
-    plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
-
-    # Predicted orbits
-    plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (K-rollout)", linewidth=1.5, color="C0")
-    plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (K-rollout)", linewidth=1.5, color="C1")
-
-    # Mark prediction start (after seq_len-1)
     idx_boundary = seq_len - 1
-    plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
-                color="C0", marker="o", s=40, label="Start pred M1 (true)")
-    plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
-                color="C1", marker="o", s=40, label="Start pred M2 (true)")
+
+    if x_dim == 4:
+        x1_true, y1_true = x_true[:, 0], x_true[:, 1]
+        x2_true, y2_true = x_true[:, 2], x_true[:, 3]
+
+        x1_pred, y1_pred = x_pred[:, 0], x_pred[:, 1]
+        x2_pred, y2_pred = x_pred[:, 2], x_pred[:, 3]
+
+        # True orbits
+        plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
+        plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
+
+        # Predicted orbits
+        plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (K-rollout)", linewidth=1.5, color="C0")
+        plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (K-rollout)", linewidth=1.5, color="C1")
+
+        # Mark prediction start (after seq_len-1)
+        plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
+                    color="C0", marker="o", s=40, label="Start pred M1 (true)")
+        plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
+                    color="C1", marker="o", s=40, label="Start pred M2 (true)")
+    else:
+        plt.plot(x_true[:, 0], x_true[:, 1], label="True", linewidth=1.5, color="C0")
+        plt.plot(x_pred[:, 0], x_pred[:, 1], "--", label="K-rollout", linewidth=1.5, color="C1")
+        plt.scatter(x_true[idx_boundary, 0], x_true[idx_boundary, 1],
+                    color="C0", marker="o", s=40, label="Prediction start")
 
     plt.title("KoopmanAE: 2D orbit, true vs K-only rollout")
     plt.xlabel("x")
@@ -501,30 +485,36 @@ def plot_koopman_orbit_for_epoch(model, val_data_norm, state_mean, state_std,
     # Denormalize
     x_pred = x_pred_norm * state_std + state_mean
     x_true = x_true_norm * state_std + state_mean
-
-    # Orbit coords
-    x1_true, y1_true = x_true[:, 0], x_true[:, 1]
-    x2_true, y2_true = x_true[:, 2], x_true[:, 3]
-
-    x1_pred, y1_pred = x_pred[:, 0], x_pred[:, 1]
-    x2_pred, y2_pred = x_pred[:, 2], x_pred[:, 3]
+    x_dim = x_true.shape[1]
 
     plt.figure(figsize=(7, 7))
 
-    # True orbits
-    plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
-    plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
-
-    # Predicted orbits
-    plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (K-rollout)", linewidth=1.5, color="C0")
-    plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (K-rollout)", linewidth=1.5, color="C1")
-
-    # Mark prediction start
     idx_boundary = seq_len - 1
-    plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
-                color="C0", marker="o", s=40, label="Start pred M1")
-    plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
-                color="C1", marker="o", s=40, label="Start pred M2")
+    if x_dim == 4:
+        x1_true, y1_true = x_true[:, 0], x_true[:, 1]
+        x2_true, y2_true = x_true[:, 2], x_true[:, 3]
+
+        x1_pred, y1_pred = x_pred[:, 0], x_pred[:, 1]
+        x2_pred, y2_pred = x_pred[:, 2], x_pred[:, 3]
+
+        # True orbits
+        plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
+        plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
+
+        # Predicted orbits
+        plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (K-rollout)", linewidth=1.5, color="C0")
+        plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (K-rollout)", linewidth=1.5, color="C1")
+
+        # Mark prediction start
+        plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
+                    color="C0", marker="o", s=40, label="Start pred M1")
+        plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
+                    color="C1", marker="o", s=40, label="Start pred M2")
+    else:
+        plt.plot(x_true[:, 0], x_true[:, 1], label="True", linewidth=1.5, color="C0")
+        plt.plot(x_pred[:, 0], x_pred[:, 1], "--", label="K-rollout", linewidth=1.5, color="C1")
+        plt.scatter(x_true[idx_boundary, 0], x_true[idx_boundary, 1],
+                    color="C0", marker="o", s=40, label="Prediction start")
 
     plt.title(f"KoopmanAE orbit (epoch {epoch:03d})")
     plt.xlabel("x")
@@ -651,7 +641,8 @@ def main():
     EXP_OUTPUT_ROOT = f"{cfg.name}/outputs"
 
     os.makedirs(EXP_OUTPUT_ROOT, exist_ok=True)
-    
+
+    sim_cfg  = cfg.simulation
     ds_cfg   = cfg.dataset
     k_cfg    = cfg.koopman
 
@@ -667,9 +658,10 @@ def main():
     KOOPMAN_LAMBDA = k_cfg.KOOPMAN_LAMBDA
 
     ROLLOUT_STEPS = cfg.transformer.ROLLOUT_STEPS
-    
+
     # 1) Load dataset
-    ds_file = find_latest_dataset(data_dir = EXP_DATA_ROOT)
+    dataset_pattern = f"{sim_cfg.PROBLEM.replace('-', '_')}_dataset_*.npz"
+    ds_file = find_latest_dataset(pattern=dataset_pattern, data_dir=EXP_DATA_ROOT)
     print(f"Loading dataset from: {ds_file}")
     data = np.load(ds_file)
 

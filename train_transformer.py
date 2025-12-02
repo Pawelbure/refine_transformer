@@ -556,24 +556,32 @@ def plot_training_rollout_orbits(train_norm, state_mean, state_std, encoder, dec
 
         x_pred_all = x_pred_all_norm * state_std + state_mean
         x_true_seg = x_true_seg_norm * state_std + state_mean
-
-        x1_true, y1_true = x_true_seg[:, 0], x_true_seg[:, 1]
-        x2_true, y2_true = x_true_seg[:, 2], x_true_seg[:, 3]
-        x1_pred, y1_pred = x_pred_all[:, 0], x_pred_all[:, 1]
-        x2_pred, y2_pred = x_pred_all[:, 2], x_pred_all[:, 3]
+        x_dim = x_true_seg.shape[1]
 
         plt.figure(figsize=(7, 7))
-        plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
-        plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
-
-        plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (pred)", linewidth=1.5, color="C0")
-        plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (pred)", linewidth=1.5, color="C1")
-
         idx_boundary = seq_len - 1
-        plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
-                    color="C0", marker="o", s=40, label="Start pred M1")
-        plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
-                    color="C1", marker="o", s=40, label="Start pred M2")
+
+        if x_dim == 4:
+            x1_true, y1_true = x_true_seg[:, 0], x_true_seg[:, 1]
+            x2_true, y2_true = x_true_seg[:, 2], x_true_seg[:, 3]
+            x1_pred, y1_pred = x_pred_all[:, 0], x_pred_all[:, 1]
+            x2_pred, y2_pred = x_pred_all[:, 2], x_pred_all[:, 3]
+
+            plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
+            plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
+
+            plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (pred)", linewidth=1.5, color="C0")
+            plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (pred)", linewidth=1.5, color="C1")
+
+            plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
+                        color="C0", marker="o", s=40, label="Start pred M1")
+            plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
+                        color="C1", marker="o", s=40, label="Start pred M2")
+        else:
+            plt.plot(x_true_seg[:, 0], x_true_seg[:, 1], label="True", linewidth=1.5, color="C0")
+            plt.plot(x_pred_all[:, 0], x_pred_all[:, 1], "--", label="Pred", linewidth=1.5, color="C1")
+            plt.scatter(x_true_seg[idx_boundary, 0], x_true_seg[idx_boundary, 1],
+                        color="C0", marker="o", s=40, label="Prediction start")
 
         plt.title(f"Transformer train sample {idx} (epoch {epoch:03d})")
         plt.xlabel("x")
@@ -618,26 +626,34 @@ def plot_rollout_example_2d_orbit(test_norm, state_mean, state_std, t_eval,
     # denormalize
     x_pred_all = x_pred_all_norm * state_std + state_mean
     x_true_seg = x_true_seg_norm * state_std + state_mean
+    x_dim = x_true_seg.shape[1]
 
     # --- 2D orbit plot ---
-    x1_true, y1_true = x_true_seg[:, 0], x_true_seg[:, 1]
-    x2_true, y2_true = x_true_seg[:, 2], x_true_seg[:, 3]
-
-    x1_pred, y1_pred = x_pred_all[:, 0], x_pred_all[:, 1]
-    x2_pred, y2_pred = x_pred_all[:, 2], x_pred_all[:, 3]
-
     plt.figure(figsize=(7, 7))
-    plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
-    plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
-
-    plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (pred)", linewidth=1.5, color="C0")
-    plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (pred)", linewidth=1.5, color="C1")
-
     idx_boundary = seq_len - 1
-    plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
-                color="C0", marker="o", s=40, label="Start pred M1")
-    plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
-                color="C1", marker="o", s=40, label="Start pred M2")
+
+    if x_dim == 4:
+        x1_true, y1_true = x_true_seg[:, 0], x_true_seg[:, 1]
+        x2_true, y2_true = x_true_seg[:, 2], x_true_seg[:, 3]
+
+        x1_pred, y1_pred = x_pred_all[:, 0], x_pred_all[:, 1]
+        x2_pred, y2_pred = x_pred_all[:, 2], x_pred_all[:, 3]
+
+        plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
+        plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
+
+        plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (pred)", linewidth=1.5, color="C0")
+        plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (pred)", linewidth=1.5, color="C1")
+
+        plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
+                    color="C0", marker="o", s=40, label="Start pred M1")
+        plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
+                    color="C1", marker="o", s=40, label="Start pred M2")
+    else:
+        plt.plot(x_true_seg[:, 0], x_true_seg[:, 1], label="True", linewidth=1.5, color="C0")
+        plt.plot(x_pred_all[:, 0], x_pred_all[:, 1], "--", label="Pred", linewidth=1.5, color="C1")
+        plt.scatter(x_true_seg[idx_boundary, 0], x_true_seg[idx_boundary, 1],
+                    color="C0", marker="o", s=40, label="Prediction start")
 
     plt.title("Transformer rollout: 2D orbit, true vs pred (test example)")
     plt.xlabel("x")
@@ -708,7 +724,8 @@ def main():
     ROLLOUT_STEPS = tf_cfg.ROLLOUT_STEPS
     
     # 1) Load dataset
-    ds_file = find_latest_dataset(data_dir=EXP_DATA_ROOT)
+    dataset_pattern = f"{cfg.simulation.PROBLEM.replace('-', '_')}_dataset_*.npz"
+    ds_file = find_latest_dataset(pattern=dataset_pattern, data_dir=EXP_DATA_ROOT)
     print(f"Loading dataset from: {ds_file}")
     data = np.load(ds_file)
 

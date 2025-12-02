@@ -16,6 +16,7 @@ from typing import Dict, Any, Tuple
 
 @dataclass
 class SimulationConfig:
+    PROBLEM: str        # "two_body_problem" or "2d-throw"
     G: float
     T_SPAN: Tuple[float, float]
     NUM_STEPS: int
@@ -91,6 +92,7 @@ EXPERIMENTS["experiment1_2025-11-28"] = ExperimentConfig(
     name="experiment1_2025-11-28",
     DATA_ROOT="data",
     simulation=SimulationConfig(
+        PROBLEM="two_body_problem",
         G=1.0,
         T_SPAN=(0.0, 10.0),
         NUM_STEPS=2000,
@@ -138,6 +140,7 @@ EXPERIMENTS["experiment2_2025-11-28_high-variance"] = ExperimentConfig(
     name="experiment2_2025-11-28_high-variance",
     DATA_ROOT="data",
     simulation=SimulationConfig(
+        PROBLEM="two_body_problem",
         G=1.0,
         T_SPAN=(0.0, 5.0),
         NUM_STEPS=2000,
@@ -185,25 +188,26 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
     name="test_experiment",
     DATA_ROOT="data",
     simulation=SimulationConfig(
-        G=1.0,
-        T_SPAN=(0.0, 8.0),
-        NUM_STEPS=320,
-        NUM_TRAJECTORIES=40,
-        NUM_TRAJ_OOD=3,
-        PERTURBATION=0.2,
+        PROBLEM="2d-throw",
+        G=9.81,
+        T_SPAN=(0.0, 4.0),
+        NUM_STEPS=300,
+        NUM_TRAJECTORIES=60,
+        NUM_TRAJ_OOD=6,
+        PERTURBATION=0.05,
     ),
     dataset=DatasetConfig(
-        SEQ_LEN=80,
-        HORIZON=30,
+        SEQ_LEN=60,
+        HORIZON=40,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
     koopman=KoopmanConfig(
         LATENT_DIM=8,
         HIDDEN_DIM=128,
-        LR=1e-3,
-        BATCH_SIZE=1,
-        EPOCHS=60,
+        LR=5e-4,
+        BATCH_SIZE=64,
+        EPOCHS=80,
         KOOPMAN_LAMBDA=10.0,
         K_MAX=12,
     ),
@@ -213,15 +217,15 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         NUM_LAYERS=6,
         DIM_FEEDFORWARD=256,
         DROPOUT=0.1,
-        LR=1e-3,
-        BATCH_SIZE=1,
-        EPOCHS=80,
-        ROLLOUT_STEPS=80,
-        MAX_LEN_EXTRA=20,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
-        X_WEIGHT=1.5,
-        TEACHER_FORCING_START=0.7,
-        TEACHER_FORCING_END=0.1,
-        LATENT_NOISE_STD=0.015,
+        LR=4e-4,
+        BATCH_SIZE=64,
+        EPOCHS=100,
+        ROLLOUT_STEPS=100,
+        MAX_LEN_EXTRA=30,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
+        X_WEIGHT=1.0,
+        TEACHER_FORCING_START=0.6,
+        TEACHER_FORCING_END=0.2,
+        LATENT_NOISE_STD=0.01,
     ),
     eval=EvalConfig(
         OOD_ROLLOUT_STEPS=400,
