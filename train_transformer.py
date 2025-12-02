@@ -163,7 +163,11 @@ def train_transformer(dyn_model, encoder, decoder,
                       latent_noise_std=0.0,
                       grad_clip=0.0,
                       fine_tune_encoder=False,
-                      train_sample_indices=None):
+                      train_sample_indices=None,
+                      start_epoch=0,
+                      optimizer_state_dict=None,
+                      best_val_loss_init=None,
+                      best_rollout_loss_init=None):
     dyn_model.to(device)
     encoder.to(device)
     decoder.to(device)
@@ -181,10 +185,12 @@ def train_transformer(dyn_model, encoder, decoder,
         trainable_params += list(encoder.parameters())
 
     optimizer = torch.optim.Adam(trainable_params, lr=lr)
+    if optimizer_state_dict is not None:
+        optimizer.load_state_dict(optimizer_state_dict)
     mse = nn.MSELoss()
 
-    best_val_loss = float("inf")
-    best_rollout_loss = float("inf")
+    best_val_loss = float("inf") if best_val_loss_init is None else float(best_val_loss_init)
+    best_rollout_loss = float("inf") if best_rollout_loss_init is None else float(best_rollout_loss_init)
     history = {"train": [], "val": [], "rollout_val": []}
     if train_sample_indices is None:
         train_sample_indices = _fixed_sample_indices(train_norm, num_samples=10, seed=0)
@@ -196,6 +202,7 @@ def train_transformer(dyn_model, encoder, decoder,
         return teacher_forcing_start + alpha * (teacher_forcing_end - teacher_forcing_start)
 
     for epoch in range(1, num_epochs + 1):
+        global_epoch = start_epoch + epoch
         # linear decay of teacher forcing
         tf_ratio = teacher_forcing_end + (teacher_forcing_start - teacher_forcing_end) * max(0.0, (num_epochs - epoch) / max(1, num_epochs - 1))
         # -------------------
@@ -322,7 +329,7 @@ def train_transformer(dyn_model, encoder, decoder,
             best_val_loss = val_loss
             torch.save(
                 {
-                    "epoch": epoch,
+                    "epoch": global_epoch,
                     "model_state_dict": dyn_model.state_dict(),
                     "encoder_state_dict": encoder.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
@@ -343,7 +350,7 @@ def train_transformer(dyn_model, encoder, decoder,
             best_rollout_loss = rollout_val_loss
             torch.save(
                 {
-                    "epoch": epoch,
+                    "epoch": global_epoch,
                     "model_state_dict": dyn_model.state_dict(),
                     "encoder_state_dict": encoder.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
@@ -353,9 +360,9 @@ def train_transformer(dyn_model, encoder, decoder,
                 os.path.join(out_dir, "transformer_best_rollout.pt"),
             )
 
-        if epoch % 5 == 0 or epoch == 1 or epoch == num_epochs:
+        if global_epoch % 5 == 0 or epoch == 1 or epoch == num_epochs:
             print(
-                f"[Transformer] Epoch {epoch:03d} | Train: {train_loss:.4e} | "
+                f"[Transformer] Epoch {global_epoch:03d} | Train: {train_loss:.4e} | "
                 f"Val: {val_loss:.4e} | Rollout Val: {rollout_val_loss:.4e} | "
                 f"TF prob: {tf_ratio:.2f}"
             )
@@ -654,11 +661,23 @@ def main():
         help="Name of experiment configuration to use.",
     )
     parser.add_argument(
+        "--transformer_mode",
+        choices=["reuse", "continue", "train"],
+        help=(
+            "How to handle an existing Transformer: reuse the latest checkpoint, "
+            "continue training it, or train a fresh model."
+        ),
+    )
+    parser.add_argument(
         "--reuse_transformer",
         action="store_true",
-        help="Reuse latest trained Transformer instead of training a new one.",
+        help="DEPRECATED: Equivalent to --transformer_mode=reuse.",
     )
     args = parser.parse_args()
+
+    tf_mode = args.transformer_mode
+    if tf_mode is None and args.reuse_transformer:
+        tf_mode = "reuse"
 
     cfg     = get_experiment_config(args.experiment)
     ds_cfg  = cfg.dataset
@@ -762,17 +781,64 @@ def main():
     # 5) Initialize (or reuse) Transformer
     best_rollout_loss = float("nan")
     final_epoch = "final"
+    reuse_transformer = False
+    continue_transformer = False
+    resume_optimizer_state_tf = None
+    start_epoch_tf = 0
+    best_val_from_ckpt_tf = None
+    best_rollout_from_ckpt_tf = None
+    latest_tf_dir = None
+    latest_tf_ckpt_path = None
+    latest_tf_err = ""
 
-    if args.reuse_transformer:
-        print("\n--reuse_transformer was specified. Trying to load latest Transformer model...")
+    try:
+        latest_tf_dir, latest_tf_ckpt_path = find_latest_transformer(output_dir=EXP_OUTPUT_ROOT)
+    except FileNotFoundError as e:
+        latest_tf_err = str(e)
 
-        last_tf_dir, last_tf_ckpt_path = find_latest_transformer()
-        print(f"Loading Transformer from: {last_tf_ckpt_path}")
+    if tf_mode is None:
+        if latest_tf_ckpt_path:
+            print("\nA previously trained Transformer was found:")
+            print(f"  {latest_tf_ckpt_path}")
+            choice = input("Choose action [r]euse / [c]ontinue / [n]ew (default=n): ").strip().lower()
+            if choice == "r":
+                tf_mode = "reuse"
+            elif choice == "c":
+                tf_mode = "continue"
+            else:
+                tf_mode = "train"
+        else:
+            tf_mode = "train"
 
-        # Load checkpoint
-        ckpt_tf = torch.load(last_tf_ckpt_path, map_location=DEVICE)
+    if tf_mode in {"reuse", "continue"} and not latest_tf_ckpt_path:
+        print(f"\n{latest_tf_err or 'No previous Transformer checkpoint found.'} Training a new model instead.\n")
+        tf_mode = "train"
 
-        # Instantiate Transformer using config hyperparameters
+    reuse_ckpt_path = None
+    ckpt_tf = None
+
+    if tf_mode == "reuse":
+        print(f"\nReusing existing Transformer checkpoint from: {latest_tf_ckpt_path}")
+        shutil.copytree(latest_tf_dir, out_dir, dirs_exist_ok=True)
+        reuse_ckpt_path = os.path.join(out_dir, "transformer_best.pt")
+        ckpt_tf = torch.load(reuse_ckpt_path, map_location=DEVICE)
+        reuse_transformer = True
+    elif tf_mode == "continue":
+        print(f"\nContinuing Transformer training from: {latest_tf_ckpt_path}")
+        shutil.copytree(latest_tf_dir, out_dir, dirs_exist_ok=True)
+        reuse_ckpt_path = os.path.join(out_dir, "transformer_best.pt")
+        ckpt_tf = torch.load(reuse_ckpt_path, map_location=DEVICE)
+        start_epoch_tf = int(ckpt_tf.get("epoch", 0))
+        resume_optimizer_state_tf = ckpt_tf.get("optimizer_state_dict")
+        best_val_from_ckpt_tf = ckpt_tf.get("val_loss")
+        best_rollout_from_ckpt_tf = ckpt_tf.get("rollout_val_loss")
+        continue_transformer = True
+    else:
+        tf_mode = "train"
+
+    if reuse_transformer:
+        print(f"Loading Transformer from: {reuse_ckpt_path}")
+
         ckpt_pe = ckpt_tf["model_state_dict"].get("pos_encoder.pe")
         ckpt_max_len = ckpt_pe.shape[1] if ckpt_pe is not None else 0
         model_max_len = max(max_len_tf, ckpt_max_len)
@@ -791,17 +857,17 @@ def main():
             encoder.load_state_dict(ckpt_tf["encoder_state_dict"], strict=False)
         dyn_model.eval()
 
-        # best_val_loss comes from the reused checkpoint (may be NaN if missing)
         best_val_loss = float(ckpt_tf.get("val_loss", float("nan")))
         best_rollout_loss = float(ckpt_tf.get("rollout_val_loss", float("nan")))
         final_epoch = ckpt_tf.get("epoch", "reused")
         print(f"Reusing Transformer model — skipping training. "
               f"(stored val_loss = {best_val_loss:.4e})\n")
-
-        # Note: no per-epoch plots here (no training loop), but we’ll still
-        # create a fresh rollout orbit plot later in this script.
     else:
         print("\nTraining new Transformer model...\n")
+
+        ckpt_pe = ckpt_tf["model_state_dict"].get("pos_encoder.pe") if continue_transformer and ckpt_tf else None
+        ckpt_max_len = ckpt_pe.shape[1] if ckpt_pe is not None else 0
+        model_max_len = max(max_len_tf, ckpt_max_len)
 
         dyn_model = LatentTransformer(
             latent_dim=tf_cfg.LATENT_DIM,
@@ -809,13 +875,14 @@ def main():
             num_layers=tf_cfg.NUM_LAYERS,
             dim_feedforward=tf_cfg.DIM_FEEDFORWARD,
             dropout=tf_cfg.DROPOUT,
-            max_len=max_len_tf,
+            max_len=model_max_len,
         ).to(DEVICE)
 
-        # train_transformer will:
-        #   - log train/val loss
-        #   - save transformer_best.pt
-        #   - plot 2D orbit every 2 epochs (using test_norm, etc.)
+        if continue_transformer and ckpt_tf is not None:
+            dyn_model.load_state_dict(ckpt_tf["model_state_dict"], strict=False)
+            if "encoder_state_dict" in ckpt_tf:
+                encoder.load_state_dict(ckpt_tf["encoder_state_dict"], strict=False)
+
         best_val_loss, best_rollout_loss, history = train_transformer(
             dyn_model, encoder, decoder,
             train_loader, val_loader,
@@ -837,9 +904,12 @@ def main():
             grad_clip=tf_cfg.GRAD_CLIP,
             fine_tune_encoder=tf_cfg.FINE_TUNE_ENCODER,
             train_sample_indices=train_sample_indices,
+            start_epoch=start_epoch_tf if continue_transformer else 0,
+            optimizer_state_dict=resume_optimizer_state_tf if continue_transformer else None,
+            best_val_loss_init=best_val_from_ckpt_tf if continue_transformer else None,
+            best_rollout_loss_init=best_rollout_from_ckpt_tf if continue_transformer else None,
         )
 
-        # After training, reload the best checkpoint (for final eval/plots)
         tf_ckpt = torch.load(os.path.join(out_dir, "transformer_best.pt"),
                              map_location=DEVICE)
         dyn_model.load_state_dict(tf_ckpt["model_state_dict"])

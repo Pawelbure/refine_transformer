@@ -146,18 +146,24 @@ def train_koopman_ae(model, train_loader, val_loader,
                      val_data_norm=None, train_data_norm=None,
                      state_mean=None, state_std=None,
                      seq_len=None, rollout_steps=None, orbit_plot_every=None,
-                     train_sample_indices=None):
+                     train_sample_indices=None,
+                     start_epoch=0,
+                     optimizer_state_dict=None,
+                     best_val_loss_init=None):
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    if optimizer_state_dict is not None:
+        optimizer.load_state_dict(optimizer_state_dict)
     mse = nn.MSELoss()
 
-    best_val_loss = float("inf")
+    best_val_loss = float("inf") if best_val_loss_init is None else float(best_val_loss_init)
     history = {"train": [], "val": []}
 
     if train_sample_indices is None:
         train_sample_indices = _fixed_sample_indices(train_data_norm, num_samples=10, seed=0)
 
     for epoch in range(1, num_epochs + 1):
+        global_epoch = start_epoch + epoch
         # -------------------
         # Train
         # -------------------
@@ -234,7 +240,7 @@ def train_koopman_ae(model, train_loader, val_loader,
         # Plot 2D orbit every `orbit_plot_every` epochs (if data is provided)
         if (
             orbit_plot_every is not None
-            and epoch % orbit_plot_every == 0
+            and global_epoch % orbit_plot_every == 0
             and val_data_norm is not None
             and state_mean is not None
             and state_std is not None
@@ -251,7 +257,30 @@ def train_koopman_ae(model, train_loader, val_loader,
                 rollout_steps=rollout_steps,
                 out_dir=out_dir,
                 device=device,
+                epoch=global_epoch,
+            )
+
+        # Plot a handful of training samples every 2 epochs
+        if (
+            train_data_norm is not None
+            and global_epoch % 2 == 0
+            and state_mean is not None
+            and state_std is not None
+            and seq_len is not None
+            and rollout_steps is not None
+        ):
+            plot_koopman_training_samples(
+                model,
+                train_data_norm=train_data_norm,
+                state_mean=state_mean,
+                state_std=state_std,
+                seq_len=seq_len,
+                rollout_steps=rollout_steps,
+                out_dir=out_dir,
+                device=device,
                 epoch=epoch,
+                num_samples=10,
+                sample_indices=train_sample_indices,
             )
 
         # Plot a handful of training samples every 2 epochs
@@ -282,7 +311,7 @@ def train_koopman_ae(model, train_loader, val_loader,
             best_val_loss = val_loss
             torch.save(
                 {
-                    "epoch": epoch,
+                    "epoch": global_epoch,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_loss": val_loss,
@@ -292,13 +321,13 @@ def train_koopman_ae(model, train_loader, val_loader,
                 os.path.join(out_dir, "koopman_ae_best.pt"),
             )
 
-        if epoch % 5 == 0 or epoch == 1 or epoch == num_epochs:
-            print(f"[KoopmanAE] Epoch {epoch:03d} | Train: {train_loss:.4e} | Val: {val_loss:.4e}")
+        if global_epoch % 5 == 0 or epoch == 1 or epoch == num_epochs:
+            print(f"[KoopmanAE] Epoch {global_epoch:03d} | Train: {train_loss:.4e} | Val: {val_loss:.4e}")
 
     # -------------------
     # Plot loss curves
     # -------------------
-    epochs = np.arange(1, num_epochs + 1)
+    epochs = np.arange(start_epoch + 1, start_epoch + num_epochs + 1)
     plt.figure(figsize=(6, 4))
     plt.plot(epochs, history["train"], label="Train loss")
     plt.plot(epochs, history["val"],   label="Val loss")
@@ -597,11 +626,24 @@ def main():
         help="Name of experiment configuration to use.",
     )
     parser.add_argument(
+        "--koopman_mode",
+        choices=["reuse", "continue", "train"],
+        help=(
+            "How to handle an existing Koopman model: reuse the latest checkpoint, "
+            "continue training it, or train a fresh model."
+        ),
+    )
+    parser.add_argument(
         "--reuse_koopman",
         action="store_true",
-        help="Reuse the most recently trained KoopmanAE model if available.",
+        help="DEPRECATED: Equivalent to --koopman_mode=reuse.",
     )
     args = parser.parse_args()
+
+    # Determine Koopman handling mode
+    koopman_mode = args.koopman_mode
+    if koopman_mode is None and args.reuse_koopman:
+        koopman_mode = "reuse"
 
     cfg      = get_experiment_config(args.experiment)
 
@@ -657,7 +699,7 @@ def main():
     print(f"Windowed train samples: {len(train_dataset)}, val samples: {len(val_dataset)}")
 
     # ------------------------------------------------------
-    # Ask whether to reuse the latest trained KoopmanAE model
+    # Ask whether to reuse or continue the latest trained KoopmanAE model
     # ------------------------------------------------------
     # Prepare the new output directory name, but don't create it yet so the glob below
     # only sees previously-finished runs.
@@ -678,34 +720,52 @@ def main():
         print("Found Koopman output directories without checkpoints; skipping them for reuse.")
 
     reuse_model = False
+    continue_training = False
     reuse_path = None
+    resume_optimizer_state = None
+    start_epoch = 0
+    best_val_from_ckpt = None
+
     reuse_source_dir = completed_koopman_dirs[-1] if completed_koopman_dirs else None
     reuse_source_ckpt = os.path.join(reuse_source_dir, "koopman_ae_best.pt") if reuse_source_dir else None
 
-    if reuse_source_dir and os.path.exists(reuse_source_ckpt):
-        if args.reuse_koopman:
-            print(f"\nReusing existing KoopmanAE checkpoint from: {reuse_source_ckpt}")
-            shutil.copytree(reuse_source_dir, out_dir, dirs_exist_ok=True)
-            reuse_model = True
-            reuse_path = os.path.join(out_dir, "koopman_ae_best.pt")
-            print(f"Copied previous KoopmanAE outputs into new run directory: {out_dir}")
+    if koopman_mode is None and reuse_source_dir and os.path.exists(reuse_source_ckpt):
+        print("\nA previously trained KoopmanAE was found:")
+        print(f"  {reuse_source_ckpt}")
+        choice = input("Choose action [r]euse / [c]ontinue / [n]ew (default=n): ").strip().lower()
+        if choice == "r":
+            koopman_mode = "reuse"
+        elif choice == "c":
+            koopman_mode = "continue"
         else:
-            print(f"\nA previously trained KoopmanAE was found:")
-            print(f"  {reuse_source_ckpt}")
-            choice = input("Reuse the latest trained model instead of retraining? [y/n]: ").strip().lower()
-            if choice == "y":
-                shutil.copytree(reuse_source_dir, out_dir, dirs_exist_ok=True)
-                reuse_model = True
-                reuse_path = os.path.join(out_dir, "koopman_ae_best.pt")
-                print(f"Copied previous KoopmanAE outputs into new run directory: {out_dir}")
-    elif args.reuse_koopman:
-        if reuse_source_dir:
-            print(f"\n--reuse_koopman was provided, but no checkpoint was found in: {reuse_source_dir}. Proceeding to train a new model.\n")
-        else:
-            print("\n--reuse_koopman was provided, but no previous checkpoint was found. Proceeding to train a new model.\n")
+            koopman_mode = "train"
+    elif koopman_mode is None:
+        koopman_mode = "train"
 
-    # Ensure the fresh output directory exists before training starts when not reusing.
-    if not reuse_model:
+    if koopman_mode in {"reuse", "continue"} and not reuse_source_ckpt:
+        print("\nNo previous Koopman checkpoint found. Training a new model instead.\n")
+        koopman_mode = "train"
+
+    if koopman_mode == "reuse":
+        print(f"\nReusing existing KoopmanAE checkpoint from: {reuse_source_ckpt}")
+        shutil.copytree(reuse_source_dir, out_dir, dirs_exist_ok=True)
+        reuse_model = True
+        reuse_path = os.path.join(out_dir, "koopman_ae_best.pt")
+        print(f"Copied previous KoopmanAE outputs into new run directory: {out_dir}")
+    elif koopman_mode == "continue":
+        print(f"\nContinuing training from latest KoopmanAE checkpoint: {reuse_source_ckpt}")
+        shutil.copytree(reuse_source_dir, out_dir, dirs_exist_ok=True)
+        ckpt = torch.load(reuse_source_ckpt, map_location=DEVICE)
+        reuse_path = os.path.join(out_dir, "koopman_ae_best.pt")
+        torch.save(ckpt, reuse_path)  # ensure checkpoint exists in new run directory
+        start_epoch = int(ckpt.get("epoch", 0))
+        best_val_from_ckpt = float(ckpt.get("val_loss", float("inf")))
+        resume_optimizer_state = ckpt.get("optimizer_state_dict")
+        continue_training = True
+        print(f"Copied previous KoopmanAE outputs into new run directory: {out_dir}")
+    else:
+        koopman_mode = "train"
+        # Ensure the fresh output directory exists before training starts when not reusing.
         os.makedirs(out_dir, exist_ok=True)
 
     # ------------------------------------------------------
@@ -721,7 +781,15 @@ def main():
         best_val_loss = ckpt["val_loss"]
         history = None  # optional
     else:
-        print("\nTraining new KoopmanAE model...\n")
+        if continue_training:
+            print(f"\nResuming KoopmanAE training from epoch {start_epoch}...\n")
+            ckpt = torch.load(reuse_path, map_location=DEVICE)
+            model.load_state_dict(ckpt["model_state_dict"])
+            best_val_loss_init = ckpt.get("val_loss")
+        else:
+            print("\nTraining new KoopmanAE model...\n")
+            best_val_loss_init = None
+
         best_val_loss, history = train_koopman_ae(
             model,
             train_loader,
@@ -741,6 +809,9 @@ def main():
             rollout_steps=ROLLOUT_STEPS,
             orbit_plot_every=2,
             train_sample_indices=train_sample_indices,
+            start_epoch=start_epoch if continue_training else 0,
+            optimizer_state_dict=resume_optimizer_state if continue_training else None,
+            best_val_loss_init=best_val_loss_init,
         )
 
     # Save or augment meta info about this run
@@ -761,6 +832,9 @@ def main():
             f.write(f"HIDDEN_DIM: {HIDDEN_DIM}\n")
             f.write(f"KOOPMAN_LAMBDA: {KOOPMAN_LAMBDA}\n")
             f.write(f"K_MAX: {K_MAX}\n")
+            if continue_training:
+                f.write(f"Resumed from: {reuse_source_dir}\n")
+                f.write(f"Start epoch: {start_epoch}\n")
 
     print(f"Best validation loss: {best_val_loss:.4e}")
     if reuse_model:
