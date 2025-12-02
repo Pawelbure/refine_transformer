@@ -145,13 +145,17 @@ def train_koopman_ae(model, train_loader, val_loader,
                      lr, device, out_dir,
                      val_data_norm=None, train_data_norm=None,
                      state_mean=None, state_std=None,
-                     seq_len=None, rollout_steps=None, orbit_plot_every=None):
+                     seq_len=None, rollout_steps=None, orbit_plot_every=None,
+                     train_sample_indices=None):
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     mse = nn.MSELoss()
 
     best_val_loss = float("inf")
     history = {"train": [], "val": []}
+
+    if train_sample_indices is None:
+        train_sample_indices = _fixed_sample_indices(train_data_norm, num_samples=10, seed=0)
 
     for epoch in range(1, num_epochs + 1):
         # -------------------
@@ -270,6 +274,7 @@ def train_koopman_ae(model, train_loader, val_loader,
                 device=device,
                 epoch=epoch,
                 num_samples=10,
+                sample_indices=train_sample_indices,
             )
             
         # Save best checkpoint
@@ -505,9 +510,21 @@ def plot_koopman_orbit_for_epoch(model, val_data_norm, state_mean, state_std,
     plt.close()
 
 
+def _fixed_sample_indices(train_data_norm, num_samples=10, seed=0):
+    if train_data_norm.shape[0] == 0:
+        return np.array([], dtype=int)
+
+    rng = np.random.default_rng(seed=seed)
+    return rng.choice(
+        train_data_norm.shape[0],
+        size=min(num_samples, train_data_norm.shape[0]),
+        replace=False,
+    )
+
+
 def plot_koopman_training_samples(model, train_data_norm, state_mean, state_std,
                                   seq_len, rollout_steps, out_dir, device,
-                                  epoch, num_samples=10):
+                                  epoch, num_samples=10, sample_indices=None):
     """
     Draw multiple random training trajectories and plot their Koopman rollouts
     as 2D orbits. Results are saved under
@@ -516,12 +533,10 @@ def plot_koopman_training_samples(model, train_data_norm, state_mean, state_std,
     if train_data_norm.shape[0] == 0:
         return
 
-    rng = np.random.default_rng(seed=epoch)
-    sample_indices = rng.choice(
-        train_data_norm.shape[0],
-        size=min(num_samples, train_data_norm.shape[0]),
-        replace=False,
-    )
+    if sample_indices is None:
+        sample_indices = _fixed_sample_indices(
+            train_data_norm, num_samples=num_samples, seed=0
+        )
 
     epoch_dir = os.path.join(out_dir, "training_samples", f"{epoch}epochs")
     os.makedirs(epoch_dir, exist_ok=True)
@@ -627,6 +642,9 @@ def main():
     N_train, T, x_dim = train_norm.shape
     print(f"Train norm shape: {train_norm.shape}, Val norm shape: {val_norm.shape}")
 
+    # Keep a fixed set of training trajectories for reproducible plotting
+    train_sample_indices = _fixed_sample_indices(train_norm, num_samples=10, seed=0)
+
     # 2) Build windowed datasets + loaders
     train_dataset = WindowedTrajectoryDataset(train_norm, seq_len=SEQ_LEN)
     val_dataset   = WindowedTrajectoryDataset(val_norm,   seq_len=SEQ_LEN)
@@ -722,6 +740,7 @@ def main():
             seq_len=SEQ_LEN,
             rollout_steps=ROLLOUT_STEPS,
             orbit_plot_every=2,
+            train_sample_indices=train_sample_indices,
         )
 
     # Save or augment meta info about this run
@@ -755,6 +774,21 @@ def main():
     ckpt = torch.load(ckpt_path, map_location=DEVICE)
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(DEVICE)
+
+    final_epoch = ckpt.get("epoch", "final")
+    plot_koopman_training_samples(
+        model,
+        train_data_norm=train_norm,
+        state_mean=state_mean,
+        state_std=state_std,
+        seq_len=SEQ_LEN,
+        rollout_steps=ROLLOUT_STEPS,
+        out_dir=out_dir,
+        device=DEVICE,
+        epoch=final_epoch,
+        num_samples=10,
+        sample_indices=train_sample_indices,
+    )
 
     # We use val_norm for an example, and a shorter rollout (e.g., 200 steps)
     plot_koopman_rollout_example(

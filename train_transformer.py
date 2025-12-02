@@ -162,7 +162,8 @@ def train_transformer(dyn_model, encoder, decoder,
                       teacher_forcing_end=0.2,
                       latent_noise_std=0.0,
                       grad_clip=0.0,
-                      fine_tune_encoder=False):
+                      fine_tune_encoder=False,
+                      train_sample_indices=None):
     dyn_model.to(device)
     encoder.to(device)
     decoder.to(device)
@@ -185,6 +186,8 @@ def train_transformer(dyn_model, encoder, decoder,
     best_val_loss = float("inf")
     best_rollout_loss = float("inf")
     history = {"train": [], "val": [], "rollout_val": []}
+    if train_sample_indices is None:
+        train_sample_indices = _fixed_sample_indices(train_norm, num_samples=10, seed=0)
 
     def teacher_force_prob(epoch_idx: int) -> float:
         if num_epochs == 1:
@@ -371,6 +374,7 @@ def train_transformer(dyn_model, encoder, decoder,
                 device=device,
                 epoch=epoch,
                 num_samples=10,
+                sample_indices=train_sample_indices,
             )
             plot_rollout_example_2d_orbit(
                 test_norm=test_norm,
@@ -499,9 +503,21 @@ def long_rollout_val_mse(val_norm, encoder, decoder, dyn_model, device, seq_len,
     return float("inf") if n_used == 0 else total_loss / n_used
 
 
+def _fixed_sample_indices(train_norm, num_samples=10, seed=0):
+    if train_norm.shape[0] == 0:
+        return np.array([], dtype=int)
+
+    rng = np.random.default_rng(seed=seed)
+    return rng.choice(
+        train_norm.shape[0],
+        size=min(num_samples, train_norm.shape[0]),
+        replace=False,
+    )
+
+
 def plot_training_rollout_orbits(train_norm, state_mean, state_std, encoder, decoder,
                                  dyn_model, seq_len, n_future, out_dir, device,
-                                 epoch, num_samples=10):
+                                 epoch, num_samples=10, sample_indices=None):
     """
     Plot rollout orbits for several random training trajectories every
     few epochs to monitor in-distribution behavior. Saved under
@@ -510,12 +526,10 @@ def plot_training_rollout_orbits(train_norm, state_mean, state_std, encoder, dec
     if train_norm.shape[0] == 0:
         return
 
-    rng = np.random.default_rng(seed=epoch)
-    sample_indices = rng.choice(
-        train_norm.shape[0],
-        size=min(num_samples, train_norm.shape[0]),
-        replace=False,
-    )
+    if sample_indices is None:
+        sample_indices = _fixed_sample_indices(
+            train_norm, num_samples=num_samples, seed=0
+        )
 
     epoch_dir = os.path.join(out_dir, "training_samples", f"{epoch}epochs")
     os.makedirs(epoch_dir, exist_ok=True)
@@ -717,6 +731,9 @@ def main():
 
     print(f"Transformer train samples: {len(train_ds)}, val: {len(val_ds)}, test: {len(test_ds)}")
 
+    # Fixed subset of training trajectories for reproducible plotting and evaluation
+    train_sample_indices = _fixed_sample_indices(train_norm, num_samples=10, seed=0)
+
     # 4) Prepare output dir
     time_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(EXP_OUTPUT_ROOT, f"transformer_{time_tag}")
@@ -744,6 +761,7 @@ def main():
     
     # 5) Initialize (or reuse) Transformer
     best_rollout_loss = float("nan")
+    final_epoch = "final"
 
     if args.reuse_transformer:
         print("\n--reuse_transformer was specified. Trying to load latest Transformer model...")
@@ -776,6 +794,7 @@ def main():
         # best_val_loss comes from the reused checkpoint (may be NaN if missing)
         best_val_loss = float(ckpt_tf.get("val_loss", float("nan")))
         best_rollout_loss = float(ckpt_tf.get("rollout_val_loss", float("nan")))
+        final_epoch = ckpt_tf.get("epoch", "reused")
         print(f"Reusing Transformer model — skipping training. "
               f"(stored val_loss = {best_val_loss:.4e})\n")
 
@@ -817,6 +836,7 @@ def main():
             latent_noise_std=LATENT_NOISE_STD,
             grad_clip=tf_cfg.GRAD_CLIP,
             fine_tune_encoder=tf_cfg.FINE_TUNE_ENCODER,
+            train_sample_indices=train_sample_indices,
         )
 
         # After training, reload the best checkpoint (for final eval/plots)
@@ -827,6 +847,23 @@ def main():
             encoder.load_state_dict(tf_ckpt["encoder_state_dict"], strict=False)
         best_rollout_loss = float(tf_ckpt.get("rollout_val_loss", best_rollout_loss))
         dyn_model.to(DEVICE)
+        final_epoch = tf_ckpt.get("epoch", "final")
+
+    plot_training_rollout_orbits(
+        train_norm=train_norm,
+        state_mean=state_mean,
+        state_std=state_std,
+        encoder=encoder,
+        decoder=decoder,
+        dyn_model=dyn_model,
+        seq_len=SEQ_LEN,
+        n_future=ROLLOUT_STEPS,
+        out_dir=out_dir,
+        device=DEVICE,
+        epoch=final_epoch,
+        num_samples=10,
+        sample_indices=train_sample_indices,
+    )
 
     print(f"Best Transformer val loss: {best_val_loss:.4e}")
     if not math.isnan(best_rollout_loss):
