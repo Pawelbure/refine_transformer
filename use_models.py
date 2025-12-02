@@ -188,7 +188,6 @@ def main():
     
     DEFAULT_SEQ_LEN   = ds_cfg.SEQ_LEN
     DEFAULT_N_FUTURE  = tf_cfg.ROLLOUT_STEPS
-    max_len_tf        = DEFAULT_SEQ_LEN + DEFAULT_N_FUTURE + tf_cfg.MAX_LEN_EXTRA
     
     # --------------------------------------------------------
     # 1) Load dataset
@@ -208,6 +207,9 @@ def main():
     print(f"Train_norm shape: {train_norm.shape}")
     print(f"Val_norm shape:   {val_norm.shape}")
     print(f"Test_norm shape:  {test_norm.shape}")
+
+    _, T_total, _ = train_norm.shape
+    max_len_tf = max(T_total + tf_cfg.ROLLOUT_STEPS, DEFAULT_SEQ_LEN + DEFAULT_N_FUTURE) + tf_cfg.MAX_LEN_EXTRA
 
     # --------------------------------------------------------
     # 2) Load KoopmanAE
@@ -231,13 +233,17 @@ def main():
     print(f"Loading Transformer from: {tf_ckpt_path}")
     ckpt_tf = torch.load(tf_ckpt_path, map_location=DEVICE)
 
+    ckpt_pe = ckpt_tf["model_state_dict"].get("pos_encoder.pe")
+    ckpt_max_len = ckpt_pe.shape[1] if ckpt_pe is not None else 0
+    model_max_len = max(max_len_tf, ckpt_max_len)
+
     dyn_model = LatentTransformer(
         latent_dim=tf_cfg.LATENT_DIM,
         nhead=tf_cfg.NHEAD,
         num_layers=tf_cfg.NUM_LAYERS,
         dim_feedforward=tf_cfg.DIM_FEEDFORWARD,
         dropout=tf_cfg.DROPOUT,
-        max_len=max_len_tf,
+        max_len=model_max_len,
     ).to(DEVICE)
     dyn_model.load_state_dict(ckpt_tf["model_state_dict"], strict=False)
     dyn_model.eval()
