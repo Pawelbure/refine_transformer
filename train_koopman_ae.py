@@ -282,6 +282,29 @@ def train_koopman_ae(model, train_loader, val_loader,
                 num_samples=10,
                 sample_indices=train_sample_indices,
             )
+
+        # Plot a handful of training samples every 2 epochs
+        if (
+            train_data_norm is not None
+            and epoch % 2 == 0
+            and state_mean is not None
+            and state_std is not None
+            and seq_len is not None
+            and rollout_steps is not None
+        ):
+            plot_koopman_training_samples(
+                model,
+                train_data_norm=train_data_norm,
+                state_mean=state_mean,
+                state_std=state_std,
+                seq_len=seq_len,
+                rollout_steps=rollout_steps,
+                out_dir=out_dir,
+                device=device,
+                epoch=epoch,
+                num_samples=10,
+                sample_indices=train_sample_indices,
+            )
             
         # Save best checkpoint
         if val_loss < best_val_loss:
