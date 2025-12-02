@@ -75,7 +75,7 @@ class WindowedSequenceDataset(Dataset):
             "x_out": torch.from_numpy(x_out.astype(np.float32)),
             "t0": torch.tensor(t0, dtype=torch.long),
         }
-
+    
 # ============================================================
 # Transformer in latent space
 # ============================================================
@@ -93,7 +93,18 @@ class PositionalEncoding(nn.Module):
         pe = pe.unsqueeze(0)  # (1, max_len, d_model)
         self.register_buffer("pe", pe)
 
-    def forward(self, x, start_pos: int = 0):
+    def forward(self, x, start_pos: int = 0, position_ids=None):
+        """
+        If ``position_ids`` is provided (shape: [B, T]), use absolute positions
+        for each item in the batch. Otherwise, fall back to a shared offset
+        slice starting at ``start_pos``.
+        """
+        if position_ids is not None:
+            # Clamp to buffer length to avoid OOB if rollout length exceeds max
+            pos = position_ids.clamp(max=self.pe.size(1) - 1)
+            pe = self.pe[0, pos, :]
+            return x + pe
+
         T = x.size(1)
         return x + self.pe[:, start_pos:start_pos + T, :]
 
@@ -124,14 +135,14 @@ class LatentTransformer(nn.Module):
         )
         self.readout = nn.Linear(latent_dim, latent_dim)
 
-    def forward(self, z_seq, pos_offset: int = 0):
+    def forward(self, z_seq, pos_offset: int = 0, position_ids=None):
         """
         z_seq: (B, T, latent_dim)
         position_ids: None or (B, T) absolute positions for PE slicing
         returns z_next_pred: (B, latent_dim)
         """
         z_seq = self.input_norm(z_seq)
-        z_seq = self.pos_encoder(z_seq, start_pos=pos_offset)
+        z_seq = self.pos_encoder(z_seq, start_pos=pos_offset, position_ids=position_ids)
         h = self.transformer(z_seq)      # (B, T, latent_dim)
         h_last = h[:, -1, :]
         return self.readout(h_last)
@@ -142,38 +153,44 @@ class LatentTransformer(nn.Module):
 def train_transformer(dyn_model, encoder, decoder,
                       train_loader, val_loader,
                       num_epochs, lr, device, out_dir,
-                      test_norm, state_mean, state_std,
+                      test_norm, val_norm, train_norm,
+                      state_mean, state_std,
                       t_eval, seq_len, rollout_steps,
                       horizon,
                       x_weight=1.0,
                       teacher_forcing_start=1.0,
                       teacher_forcing_end=0.2,
-                      latent_noise_std=0.0):
+                      latent_noise_std=0.0,
+                      grad_clip=0.0,
+                      fine_tune_encoder=False):
     dyn_model.to(device)
     encoder.to(device)
     decoder.to(device)
 
-    # fine-tune encoder, keep decoder frozen for stable reconstructions
+    # fine-tune encoder optionally, keep decoder frozen for stable reconstructions
     for p in encoder.parameters():
-        p.requires_grad = True
+        p.requires_grad = bool(fine_tune_encoder)
     for p in decoder.parameters():
         p.requires_grad = False
     encoder.train()
     decoder.eval()
 
-    optimizer = torch.optim.Adam(
-        list(dyn_model.parameters()) + list(encoder.parameters()), lr=lr
-    )
+    trainable_params = list(dyn_model.parameters())
+    if fine_tune_encoder:
+        trainable_params += list(encoder.parameters())
+
+    optimizer = torch.optim.Adam(trainable_params, lr=lr)
     mse = nn.MSELoss()
 
     best_val_loss = float("inf")
-    history = {"train": [], "val": []}
+    best_rollout_loss = float("inf")
+    history = {"train": [], "val": [], "rollout_val": []}
 
     def teacher_force_prob(epoch_idx: int) -> float:
         if num_epochs == 1:
-            return tf_cfg.TEACHER_FORCING_FINAL
+            return teacher_forcing_end
         alpha = (epoch_idx - 1) / (num_epochs - 1)
-        return tf_cfg.TEACHER_FORCING_INIT + alpha * (tf_cfg.TEACHER_FORCING_FINAL - tf_cfg.TEACHER_FORCING_INIT)
+        return teacher_forcing_start + alpha * (teacher_forcing_end - teacher_forcing_start)
 
     for epoch in range(1, num_epochs + 1):
         # linear decay of teacher forcing
@@ -187,12 +204,15 @@ def train_transformer(dyn_model, encoder, decoder,
         for batch in train_loader:
             x_in  = batch["x_in"].to(device)   # (B, T, x_dim)
             x_out = batch["x_out"].to(device)  # (B, H, x_dim)
+            t0    = batch["t0"].to(device)     # (B,)
 
             optimizer.zero_grad()
 
             z_seq = encoder(x_in)                 # (B,T,d)
             z_out_all = encoder(x_out.view(-1, x_out.size(-1)))
             z_out_all = z_out_all.view(x_out.size(0), x_out.size(1), -1)
+
+            pos_seq = t0.unsqueeze(1) + torch.arange(seq_len, device=device).unsqueeze(0)
 
             if latent_noise_std > 0.0:
                 z_seq = z_seq + torch.randn_like(z_seq) * latent_noise_std
@@ -203,7 +223,8 @@ def train_transformer(dyn_model, encoder, decoder,
 
             for h in range(horizon):
                 start_pos = max(0, pos_cursor - z_seq.size(1) + 1)
-                z_next_pred = dyn_model(z_seq, pos_offset=start_pos)  # (B,d)
+                position_ids = pos_seq[:, -z_seq.size(1):]
+                z_next_pred = dyn_model(z_seq, pos_offset=start_pos, position_ids=position_ids)  # (B,d)
 
                 z_next_true = z_out_all[:, h, :]
                 loss_latent = loss_latent + mse(z_next_pred, z_next_true)
@@ -217,6 +238,9 @@ def train_transformer(dyn_model, encoder, decoder,
 
                 z_seq = torch.cat([z_seq, z_feed.unsqueeze(1)], dim=1)
                 z_seq = z_seq[:, -seq_len:, :]
+                next_pos = (t0 + seq_len + h).unsqueeze(1)
+                pos_seq = torch.cat([pos_seq, next_pos], dim=1)
+                pos_seq = pos_seq[:, -seq_len:]
                 pos_cursor += 1
 
             loss_latent = loss_latent / horizon
@@ -225,8 +249,8 @@ def train_transformer(dyn_model, encoder, decoder,
             loss = loss_latent + x_weight * loss_x
             loss.backward()
 
-            if tf_cfg.GRAD_CLIP > 0:
-                torch.nn.utils.clip_grad_norm_(trainable_params, tf_cfg.GRAD_CLIP)
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(trainable_params, grad_clip)
 
             optimizer.step()
             train_loss += loss.item() * x_in.size(0)
@@ -250,13 +274,16 @@ def train_transformer(dyn_model, encoder, decoder,
                 z_out_all = encoder(x_out.view(-1, x_out.size(-1)))
                 z_out_all = z_out_all.view(x_out.size(0), x_out.size(1), -1)
 
+                pos_seq = t0.unsqueeze(1) + torch.arange(seq_len, device=device).unsqueeze(0)
+
                 loss_latent = 0.0
                 loss_x = 0.0
                 pos_cursor = z_seq.size(1) - 1
 
                 for h in range(horizon):
                     start_pos = max(0, pos_cursor - z_seq.size(1) + 1)
-                    z_next_pred = dyn_model(z_seq, pos_offset=start_pos)
+                    position_ids = pos_seq[:, -z_seq.size(1):]
+                    z_next_pred = dyn_model(z_seq, pos_offset=start_pos, position_ids=position_ids)
                     z_next_true = z_out_all[:, h, :]
                     loss_latent = loss_latent + mse(z_next_pred, z_next_true)
 
@@ -266,6 +293,9 @@ def train_transformer(dyn_model, encoder, decoder,
 
                     z_seq = torch.cat([z_seq, z_next_pred.unsqueeze(1)], dim=1)
                     z_seq = z_seq[:, -seq_len:, :]
+                    next_pos = (t0 + seq_len + h).unsqueeze(1)
+                    pos_seq = torch.cat([pos_seq, next_pos], dim=1)
+                    pos_seq = pos_seq[:, -seq_len:]
                     pos_cursor += 1
 
                 loss_latent = loss_latent / horizon
@@ -276,8 +306,13 @@ def train_transformer(dyn_model, encoder, decoder,
 
         val_loss /= len(val_loader.dataset)
 
+        rollout_val_loss = long_rollout_val_mse(
+            val_norm, encoder, decoder, dyn_model, device, seq_len, rollout_steps
+        )
+
         history["train"].append(train_loss)
         history["val"].append(val_loss)
+        history["rollout_val"].append(rollout_val_loss)
 
         # Save best checkpoint
         if val_loss < best_val_loss:
@@ -289,21 +324,54 @@ def train_transformer(dyn_model, encoder, decoder,
                     "encoder_state_dict": encoder.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_loss": val_loss,
+                    "rollout_val_loss": rollout_val_loss,
                 },
                 os.path.join(out_dir, "transformer_best.pt"),
             )
 
             # Save encoder snapshot when fine-tuning
-            if tf_cfg.FINE_TUNE_ENCODER:
+            if fine_tune_encoder:
                 torch.save(
                     {"encoder_state_dict": encoder.state_dict()},
                     os.path.join(out_dir, "encoder_best.pt"),
                 )
 
+        if rollout_val_loss < best_rollout_loss:
+            best_rollout_loss = rollout_val_loss
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": dyn_model.state_dict(),
+                    "encoder_state_dict": encoder.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss": val_loss,
+                    "rollout_val_loss": rollout_val_loss,
+                },
+                os.path.join(out_dir, "transformer_best_rollout.pt"),
+            )
+
         if epoch % 5 == 0 or epoch == 1 or epoch == num_epochs:
-            print(f"[Transformer] Epoch {epoch:03d} | Train: {train_loss:.4e} | Val: {val_loss:.4e} | TF prob: {tf_ratio:.2f}")
+            print(
+                f"[Transformer] Epoch {epoch:03d} | Train: {train_loss:.4e} | "
+                f"Val: {val_loss:.4e} | Rollout Val: {rollout_val_loss:.4e} | "
+                f"TF prob: {tf_ratio:.2f}"
+            )
 
         if epoch % 2 == 0:
+            plot_training_rollout_orbits(
+                train_norm=train_norm,
+                state_mean=state_mean,
+                state_std=state_std,
+                encoder=encoder,
+                decoder=decoder,
+                dyn_model=dyn_model,
+                seq_len=seq_len,
+                n_future=rollout_steps,
+                out_dir=out_dir,
+                device=device,
+                epoch=epoch,
+                num_samples=10,
+            )
             plot_rollout_example_2d_orbit(
                 test_norm=test_norm,
                 state_mean=state_mean,
@@ -320,7 +388,7 @@ def train_transformer(dyn_model, encoder, decoder,
             )
             print(f"  -> Saved Transformer rollout orbit plot for epoch {epoch}.")
 
-    return best_val_loss, history
+    return best_val_loss, best_rollout_loss, history
 
 # ============================================================
 # Evaluation utilities
@@ -373,22 +441,130 @@ def rollout_transformer(x_init_norm, n_steps, encoder, decoder, dyn_model, devic
     with torch.no_grad():
         z_seq = encoder(x_init_t).unsqueeze(0)  # (1, T0, d)
         x_list = [x_init_t]  # first block: (T0, x_dim)
+        pos_seq = torch.arange(T0, device=device).unsqueeze(0)  # (1, T0)
         pos_cursor = z_seq.size(1) - 1
 
-        for _ in range(n_steps):
+        for step_idx in range(n_steps):
             start_pos = max(0, pos_cursor - z_seq.size(1) + 1)
-            z_next = dyn_model(z_seq, pos_offset=start_pos)      # (1,d)
+            position_ids = pos_seq[:, -z_seq.size(1):]
+            z_next = dyn_model(z_seq, pos_offset=start_pos, position_ids=position_ids)      # (1,d)
             x_next = decoder(z_next)       # (1,x_dim)
             x_list.append(x_next)          # keep 2D
 
             # update latent sequence, keep last T0 states
             z_seq = torch.cat([z_seq, z_next.unsqueeze(1)], dim=1)  # (1,T0+1,d)
             z_seq = z_seq[:, -T0:, :]                              # (1,T0,d)
+
+            next_pos = torch.tensor([[T0 + step_idx]], device=device)
+            pos_seq = torch.cat([pos_seq, next_pos], dim=1)
+            pos_seq = pos_seq[:, -T0:]
             pos_cursor += 1
 
         x_pred_all = torch.cat(x_list, dim=0)  # (T0 + n_steps, x_dim)
 
     return x_pred_all.cpu().numpy()
+
+
+def long_rollout_val_mse(val_norm, encoder, decoder, dyn_model, device, seq_len, n_future, max_trajs=3):
+    """
+    Compute autoregressive rollout MSE on a small subset of validation
+    trajectories to surface long-horizon drift during training.
+    """
+    encoder.eval()
+    decoder.eval()
+    dyn_model.eval()
+
+    mse = nn.MSELoss()
+    n_used = 0
+    total_loss = 0.0
+    with torch.no_grad():
+        for i in range(min(max_trajs, val_norm.shape[0])):
+            x_traj = val_norm[i]
+            if x_traj.shape[0] < seq_len + 1:
+                continue
+            n_steps = min(n_future, max(1, x_traj.shape[0] - seq_len - 1))
+            x_init_norm = x_traj[:seq_len]
+            x_target = x_traj[:seq_len + n_steps]
+
+            x_pred_all_norm = rollout_transformer(
+                x_init_norm, n_steps, encoder, decoder, dyn_model, device
+            )
+
+            x_pred = torch.from_numpy(x_pred_all_norm).to(device)
+            x_true = torch.from_numpy(x_target.astype(np.float32)).to(device)
+            loss = mse(x_pred, x_true)
+            total_loss += loss.item()
+            n_used += 1
+
+    return float("inf") if n_used == 0 else total_loss / n_used
+
+
+def plot_training_rollout_orbits(train_norm, state_mean, state_std, encoder, decoder,
+                                 dyn_model, seq_len, n_future, out_dir, device,
+                                 epoch, num_samples=10):
+    """
+    Plot rollout orbits for several random training trajectories every
+    few epochs to monitor in-distribution behavior. Saved under
+    out_dir/training_samples/{epoch}epochs/.
+    """
+    if train_norm.shape[0] == 0:
+        return
+
+    rng = np.random.default_rng(seed=epoch)
+    sample_indices = rng.choice(
+        train_norm.shape[0],
+        size=min(num_samples, train_norm.shape[0]),
+        replace=False,
+    )
+
+    epoch_dir = os.path.join(out_dir, "training_samples", f"{epoch}epochs")
+    os.makedirs(epoch_dir, exist_ok=True)
+
+    for idx in sample_indices:
+        x_traj_norm = train_norm[idx]
+        if x_traj_norm.shape[0] < seq_len + 1:
+            continue
+
+        steps = min(n_future, max(1, x_traj_norm.shape[0] - seq_len - 1))
+        x_init_norm = x_traj_norm[:seq_len]
+
+        x_pred_all_norm = rollout_transformer(
+            x_init_norm, steps, encoder, decoder, dyn_model, device
+        )
+        x_true_seg_norm = x_traj_norm[:seq_len + steps]
+
+        x_pred_all = x_pred_all_norm * state_std + state_mean
+        x_true_seg = x_true_seg_norm * state_std + state_mean
+
+        x1_true, y1_true = x_true_seg[:, 0], x_true_seg[:, 1]
+        x2_true, y2_true = x_true_seg[:, 2], x_true_seg[:, 3]
+        x1_pred, y1_pred = x_pred_all[:, 0], x_pred_all[:, 1]
+        x2_pred, y2_pred = x_pred_all[:, 2], x_pred_all[:, 3]
+
+        plt.figure(figsize=(7, 7))
+        plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
+        plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
+
+        plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (pred)", linewidth=1.5, color="C0")
+        plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (pred)", linewidth=1.5, color="C1")
+
+        idx_boundary = seq_len - 1
+        plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
+                    color="C0", marker="o", s=40, label="Start pred M1")
+        plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
+                    color="C1", marker="o", s=40, label="Start pred M2")
+
+        plt.title(f"Transformer train sample {idx} (epoch {epoch:03d})")
+        plt.xlabel("x")
+        plt.ylabel("y")
+        plt.axis("equal")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+
+        fname = os.path.join(epoch_dir, f"transformer_train_sample_{idx}.png")
+        plt.savefig(fname)
+        plt.close()
 
 
 def plot_rollout_example_2d_orbit(test_norm, state_mean, state_std, t_eval,
@@ -567,6 +743,8 @@ def main():
         f.write(f"LATENT_NOISE_STD: {LATENT_NOISE_STD}\n")
     
     # 5) Initialize (or reuse) Transformer
+    best_rollout_loss = float("nan")
+
     if args.reuse_transformer:
         print("\n--reuse_transformer was specified. Trying to load latest Transformer model...")
 
@@ -577,13 +755,17 @@ def main():
         ckpt_tf = torch.load(last_tf_ckpt_path, map_location=DEVICE)
 
         # Instantiate Transformer using config hyperparameters
+        ckpt_pe = ckpt_tf["model_state_dict"].get("pos_encoder.pe")
+        ckpt_max_len = ckpt_pe.shape[1] if ckpt_pe is not None else 0
+        model_max_len = max(max_len_tf, ckpt_max_len)
+
         dyn_model = LatentTransformer(
             latent_dim=tf_cfg.LATENT_DIM,
             nhead=tf_cfg.NHEAD,
             num_layers=tf_cfg.NUM_LAYERS,
             dim_feedforward=tf_cfg.DIM_FEEDFORWARD,
             dropout=tf_cfg.DROPOUT,
-            max_len=max_len_tf,
+            max_len=model_max_len,
         ).to(DEVICE)
 
         dyn_model.load_state_dict(ckpt_tf["model_state_dict"], strict=False)
@@ -593,6 +775,7 @@ def main():
 
         # best_val_loss comes from the reused checkpoint (may be NaN if missing)
         best_val_loss = float(ckpt_tf.get("val_loss", float("nan")))
+        best_rollout_loss = float(ckpt_tf.get("rollout_val_loss", float("nan")))
         print(f"Reusing Transformer model — skipping training. "
               f"(stored val_loss = {best_val_loss:.4e})\n")
 
@@ -614,12 +797,14 @@ def main():
         #   - log train/val loss
         #   - save transformer_best.pt
         #   - plot 2D orbit every 2 epochs (using test_norm, etc.)
-        best_val_loss, history = train_transformer(
+        best_val_loss, best_rollout_loss, history = train_transformer(
             dyn_model, encoder, decoder,
             train_loader, val_loader,
             num_epochs=EPOCHS, lr=LR,
             device=DEVICE, out_dir=out_dir,
             test_norm=test_norm,
+            val_norm=val_norm,
+            train_norm=train_norm,
             state_mean=state_mean,
             state_std=state_std,
             t_eval=t_eval,
@@ -630,6 +815,8 @@ def main():
             teacher_forcing_start=TEACHER_FORCING_START,
             teacher_forcing_end=TEACHER_FORCING_END,
             latent_noise_std=LATENT_NOISE_STD,
+            grad_clip=tf_cfg.GRAD_CLIP,
+            fine_tune_encoder=tf_cfg.FINE_TUNE_ENCODER,
         )
 
         # After training, reload the best checkpoint (for final eval/plots)
@@ -638,9 +825,12 @@ def main():
         dyn_model.load_state_dict(tf_ckpt["model_state_dict"])
         if "encoder_state_dict" in tf_ckpt:
             encoder.load_state_dict(tf_ckpt["encoder_state_dict"], strict=False)
+        best_rollout_loss = float(tf_ckpt.get("rollout_val_loss", best_rollout_loss))
         dyn_model.to(DEVICE)
 
     print(f"Best Transformer val loss: {best_val_loss:.4e}")
+    if not math.isnan(best_rollout_loss):
+        print(f"Best Transformer long-rollout val loss: {best_rollout_loss:.4e}")
 
     # 7) One-step MSE in x-space on test set
     test_one_step_mse = one_step_mse_xspace(
@@ -649,6 +839,8 @@ def main():
     print(f"One-step MSE in x-space (test): {test_one_step_mse:.4e}")
     with open(os.path.join(out_dir, "metrics.txt"), "w") as f:
         f.write(f"best_val_loss: {best_val_loss:.6e}\n")
+        if not math.isnan(best_rollout_loss):
+            f.write(f"best_rollout_val_loss: {best_rollout_loss:.6e}\n")
         f.write(f"test_one_step_mse_xspace: {test_one_step_mse:.6e}\n")
 
     # 8) Long rollout example on first test trajectory – 2D orbit only

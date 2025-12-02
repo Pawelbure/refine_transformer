@@ -10,6 +10,7 @@
 import os
 import glob
 import math
+import shutil
 from datetime import datetime
 import argparse
 
@@ -142,7 +143,8 @@ class KoopmanAE(nn.Module):
 def train_koopman_ae(model, train_loader, val_loader,
                      num_epochs, koopman_lambda, k_max,
                      lr, device, out_dir,
-                     val_data_norm=None, state_mean=None, state_std=None,
+                     val_data_norm=None, train_data_norm=None,
+                     state_mean=None, state_std=None,
                      seq_len=None, rollout_steps=None, orbit_plot_every=None):
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -246,6 +248,28 @@ def train_koopman_ae(model, train_loader, val_loader,
                 out_dir=out_dir,
                 device=device,
                 epoch=epoch,
+            )
+
+        # Plot a handful of training samples every 2 epochs
+        if (
+            train_data_norm is not None
+            and epoch % 2 == 0
+            and state_mean is not None
+            and state_std is not None
+            and seq_len is not None
+            and rollout_steps is not None
+        ):
+            plot_koopman_training_samples(
+                model,
+                train_data_norm=train_data_norm,
+                state_mean=state_mean,
+                state_std=state_std,
+                seq_len=seq_len,
+                rollout_steps=rollout_steps,
+                out_dir=out_dir,
+                device=device,
+                epoch=epoch,
+                num_samples=10,
             )
             
         # Save best checkpoint
@@ -480,6 +504,72 @@ def plot_koopman_orbit_for_epoch(model, val_data_norm, state_mean, state_std,
     plt.savefig(fname)
     plt.close()
 
+
+def plot_koopman_training_samples(model, train_data_norm, state_mean, state_std,
+                                  seq_len, rollout_steps, out_dir, device,
+                                  epoch, num_samples=10):
+    """
+    Draw multiple random training trajectories and plot their Koopman rollouts
+    as 2D orbits. Results are saved under
+    out_dir/training_samples/{epoch}epochs/.
+    """
+    if train_data_norm.shape[0] == 0:
+        return
+
+    rng = np.random.default_rng(seed=epoch)
+    sample_indices = rng.choice(
+        train_data_norm.shape[0],
+        size=min(num_samples, train_data_norm.shape[0]),
+        replace=False,
+    )
+
+    epoch_dir = os.path.join(out_dir, "training_samples", f"{epoch}epochs")
+    os.makedirs(epoch_dir, exist_ok=True)
+
+    for idx in sample_indices:
+        x_traj_norm = train_data_norm[idx]
+        if x_traj_norm.shape[0] < seq_len + 1:
+            continue
+
+        steps = min(rollout_steps, max(1, x_traj_norm.shape[0] - seq_len - 1))
+        x_init_norm = x_traj_norm[:seq_len]
+
+        x_pred_norm = koopman_rollout(model, x_init_norm, steps, device)
+        x_true_norm = x_traj_norm[:seq_len + steps]
+
+        x_pred = x_pred_norm * state_std + state_mean
+        x_true = x_true_norm * state_std + state_mean
+
+        x1_true, y1_true = x_true[:, 0], x_true[:, 1]
+        x2_true, y2_true = x_true[:, 2], x_true[:, 3]
+        x1_pred, y1_pred = x_pred[:, 0], x_pred[:, 1]
+        x2_pred, y2_pred = x_pred[:, 2], x_pred[:, 3]
+
+        plt.figure(figsize=(7, 7))
+        plt.plot(x1_true, y1_true, label="Mass 1 (true)", linewidth=1.5, color="C0")
+        plt.plot(x2_true, y2_true, label="Mass 2 (true)", linewidth=1.5, color="C1")
+
+        plt.plot(x1_pred, y1_pred, "--", label="Mass 1 (K-rollout)", linewidth=1.5, color="C0")
+        plt.plot(x2_pred, y2_pred, "--", label="Mass 2 (K-rollout)", linewidth=1.5, color="C1")
+
+        idx_boundary = seq_len - 1
+        plt.scatter(x1_true[idx_boundary], y1_true[idx_boundary],
+                    color="C0", marker="o", s=40, label="Start pred M1")
+        plt.scatter(x2_true[idx_boundary], y2_true[idx_boundary],
+                    color="C1", marker="o", s=40, label="Start pred M2")
+
+        plt.title(f"KoopmanAE train sample {idx} (epoch {epoch:03d})")
+        plt.xlabel("x")
+        plt.ylabel("y")
+        plt.axis("equal")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+
+        fname = os.path.join(epoch_dir, f"koopman_train_sample_{idx}.png")
+        plt.savefig(fname)
+        plt.close()
+
 # ============================================================
 # Main
 # ============================================================
@@ -490,6 +580,11 @@ def main():
         type=str,
         default=DEFAULT_EXPERIMENT,
         help="Name of experiment configuration to use.",
+    )
+    parser.add_argument(
+        "--reuse_koopman",
+        action="store_true",
+        help="Reuse the most recently trained KoopmanAE model if available.",
     )
     args = parser.parse_args()
 
@@ -543,45 +638,57 @@ def main():
 
     print(f"Windowed train samples: {len(train_dataset)}, val samples: {len(val_dataset)}")
 
-    # 3) Prepare output dir
-    time_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_dir = os.path.join(EXP_OUTPUT_ROOT, f"koopman_ae_{time_tag}")
-    os.makedirs(out_dir, exist_ok=True)
-
-    # Save a copy of some meta info
-    with open(os.path.join(out_dir, "koopman_info.txt"), "w") as f:
-        f.write(f"Dataset file: {ds_file}\n")
-        f.write(f"SEQ_LEN: {SEQ_LEN}\n")
-        f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
-        f.write(f"EPOCHS: {EPOCHS}\n")
-        f.write(f"LR: {LR}\n")
-        f.write(f"LATENT_DIM: {LATENT_DIM}\n")
-        f.write(f"HIDDEN_DIM: {HIDDEN_DIM}\n")
-        f.write(f"KOOPMAN_LAMBDA: {KOOPMAN_LAMBDA}\n")
-        f.write(f"K_MAX: {K_MAX}\n")
-
     # ------------------------------------------------------
     # Ask whether to reuse the latest trained KoopmanAE model
     # ------------------------------------------------------
+    # Prepare the new output directory name, but don't create it yet so the glob below
+    # only sees previously-finished runs.
+    time_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_dir = os.path.join(EXP_OUTPUT_ROOT, f"koopman_ae_{time_tag}")
+
     # Find latest KoopmanAE experiment folder
     koopman_dirs = sorted(
         glob.glob(os.path.join(EXP_OUTPUT_ROOT, "koopman_ae_*"))
     )
+    prev_koopman_dirs = [d for d in koopman_dirs if os.path.abspath(d) != os.path.abspath(out_dir)]
+    completed_koopman_dirs = [
+        d for d in prev_koopman_dirs
+        if os.path.exists(os.path.join(d, "koopman_ae_best.pt"))
+    ]
+
+    if prev_koopman_dirs and not completed_koopman_dirs:
+        print("Found Koopman output directories without checkpoints; skipping them for reuse.")
 
     reuse_model = False
     reuse_path = None
+    reuse_source_dir = completed_koopman_dirs[-1] if completed_koopman_dirs else None
+    reuse_source_ckpt = os.path.join(reuse_source_dir, "koopman_ae_best.pt") if reuse_source_dir else None
 
-    if koopman_dirs:
-        last_dir = koopman_dirs[-1]
-        last_ckpt = os.path.join(last_dir, "koopman_ae_best.pt")
-
-        if os.path.exists(last_ckpt):
+    if reuse_source_dir and os.path.exists(reuse_source_ckpt):
+        if args.reuse_koopman:
+            print(f"\nReusing existing KoopmanAE checkpoint from: {reuse_source_ckpt}")
+            shutil.copytree(reuse_source_dir, out_dir, dirs_exist_ok=True)
+            reuse_model = True
+            reuse_path = os.path.join(out_dir, "koopman_ae_best.pt")
+            print(f"Copied previous KoopmanAE outputs into new run directory: {out_dir}")
+        else:
             print(f"\nA previously trained KoopmanAE was found:")
-            print(f"  {last_ckpt}")
+            print(f"  {reuse_source_ckpt}")
             choice = input("Reuse the latest trained model instead of retraining? [y/n]: ").strip().lower()
             if choice == "y":
+                shutil.copytree(reuse_source_dir, out_dir, dirs_exist_ok=True)
                 reuse_model = True
-                reuse_path = last_ckpt
+                reuse_path = os.path.join(out_dir, "koopman_ae_best.pt")
+                print(f"Copied previous KoopmanAE outputs into new run directory: {out_dir}")
+    elif args.reuse_koopman:
+        if reuse_source_dir:
+            print(f"\n--reuse_koopman was provided, but no checkpoint was found in: {reuse_source_dir}. Proceeding to train a new model.\n")
+        else:
+            print("\n--reuse_koopman was provided, but no previous checkpoint was found. Proceeding to train a new model.\n")
+
+    # Ensure the fresh output directory exists before training starts when not reusing.
+    if not reuse_model:
+        os.makedirs(out_dir, exist_ok=True)
 
     # ------------------------------------------------------
     # 4) Build KoopmanAE and train or reuse
@@ -609,20 +716,43 @@ def main():
             out_dir=out_dir,
             # NEW: for orbit plotting during training
             val_data_norm=val_norm,
+            train_data_norm=train_norm,
             state_mean=state_mean,
             state_std=state_std,
             seq_len=SEQ_LEN,
             rollout_steps=ROLLOUT_STEPS,
             orbit_plot_every=2,
         )
-        
+
+    # Save or augment meta info about this run
+    koopman_info_path = os.path.join(out_dir, "koopman_info.txt")
+    if reuse_model:
+        with open(koopman_info_path, "a") as f:
+            f.write("\n")
+            f.write(f"Reused checkpoint from: {reuse_source_dir}\n")
+            f.write(f"Reuse invocation dataset file: {ds_file}\n")
+    else:
+        with open(koopman_info_path, "w") as f:
+            f.write(f"Dataset file: {ds_file}\n")
+            f.write(f"SEQ_LEN: {SEQ_LEN}\n")
+            f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
+            f.write(f"EPOCHS: {EPOCHS}\n")
+            f.write(f"LR: {LR}\n")
+            f.write(f"LATENT_DIM: {LATENT_DIM}\n")
+            f.write(f"HIDDEN_DIM: {HIDDEN_DIM}\n")
+            f.write(f"KOOPMAN_LAMBDA: {KOOPMAN_LAMBDA}\n")
+            f.write(f"K_MAX: {K_MAX}\n")
+
     print(f"Best validation loss: {best_val_loss:.4e}")
-    print(f"Saved model and loss curves in: {out_dir}")
+    if reuse_model:
+        print(f"Using existing model from: {reuse_path}")
+    else:
+        print(f"Saved model and loss curves in: {out_dir}")
 
     # 5) Koopman rollout sanity-check plot
     #    Reload best model (just to be clean)
-    ckpt = torch.load(os.path.join(out_dir, "koopman_ae_best.pt"),
-                      map_location=DEVICE)
+    ckpt_path = reuse_path if reuse_model else os.path.join(out_dir, "koopman_ae_best.pt")
+    ckpt = torch.load(ckpt_path, map_location=DEVICE)
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(DEVICE)
 
