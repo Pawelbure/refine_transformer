@@ -4,7 +4,7 @@ import glob
 # ============================================================
 # Helper: find latest dataset / KoopmanAE
 # ============================================================
-def find_latest_dataset(pattern="two_body_dataset_*.npz", data_dir=""):
+def find_latest_dataset(pattern="*_dataset_*.npz", data_dir=""):
     search_pattern = os.path.join(data_dir, pattern)
     files = glob.glob(search_pattern)
     if not files:

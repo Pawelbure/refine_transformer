@@ -16,6 +16,7 @@ from typing import Dict, Any, Tuple
 
 @dataclass
 class SimulationConfig:
+    PROBLEM: str        # "two_body_problem" or "2d-throw"
     G: float
     T_SPAN: Tuple[float, float]
     NUM_STEPS: int
@@ -59,6 +60,8 @@ class TransformerConfig:
     TEACHER_FORCING_START: float
     TEACHER_FORCING_END: float
     LATENT_NOISE_STD: float
+    GRAD_CLIP: float = 0.0
+    FINE_TUNE_ENCODER: bool = False
 
 
 @dataclass
@@ -89,6 +92,7 @@ EXPERIMENTS["experiment1_2025-11-28"] = ExperimentConfig(
     name="experiment1_2025-11-28",
     DATA_ROOT="data",
     simulation=SimulationConfig(
+        PROBLEM="two_body_problem",
         G=1.0,
         T_SPAN=(0.0, 10.0),
         NUM_STEPS=2000,
@@ -98,7 +102,7 @@ EXPERIMENTS["experiment1_2025-11-28"] = ExperimentConfig(
     ),
     dataset=DatasetConfig(
         SEQ_LEN=500,
-        HORIZON=5,
+        HORIZON=20,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
@@ -123,8 +127,8 @@ EXPERIMENTS["experiment1_2025-11-28"] = ExperimentConfig(
         ROLLOUT_STEPS=40,
         MAX_LEN_EXTRA=20,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
         X_WEIGHT=1.5,
-        TEACHER_FORCING_START=1.0,
-        TEACHER_FORCING_END=0.2,
+        TEACHER_FORCING_START=0.9,
+        TEACHER_FORCING_END=0.0,
         LATENT_NOISE_STD=0.01,
     ),
     eval=EvalConfig(
@@ -136,6 +140,7 @@ EXPERIMENTS["experiment2_2025-11-28_high-variance"] = ExperimentConfig(
     name="experiment2_2025-11-28_high-variance",
     DATA_ROOT="data",
     simulation=SimulationConfig(
+        PROBLEM="two_body_problem",
         G=1.0,
         T_SPAN=(0.0, 5.0),
         NUM_STEPS=2000,
@@ -145,7 +150,7 @@ EXPERIMENTS["experiment2_2025-11-28_high-variance"] = ExperimentConfig(
     ),
     dataset=DatasetConfig(
         SEQ_LEN=400,
-        HORIZON=5,
+        HORIZON=15,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
@@ -170,8 +175,8 @@ EXPERIMENTS["experiment2_2025-11-28_high-variance"] = ExperimentConfig(
         ROLLOUT_STEPS=120,
         MAX_LEN_EXTRA=20,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
         X_WEIGHT=1.5,
-        TEACHER_FORCING_START=1.0,
-        TEACHER_FORCING_END=0.2,
+        TEACHER_FORCING_START=0.9,
+        TEACHER_FORCING_END=0.0,
         LATENT_NOISE_STD=0.015,
     ),
     eval=EvalConfig(
@@ -183,27 +188,28 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
     name="test_experiment",
     DATA_ROOT="data",
     simulation=SimulationConfig(
-        G=1.0,
-        T_SPAN=(0.0, 6.0),
-        NUM_STEPS=200,
-        NUM_TRAJECTORIES=30,
-        NUM_TRAJ_OOD=3,
-        PERTURBATION=0.0,
+        PROBLEM="2d-throw",
+        G=9.81,
+        T_SPAN=(0.0, 4.0),
+        NUM_STEPS=300,
+        NUM_TRAJECTORIES=60,
+        NUM_TRAJ_OOD=6,
+        PERTURBATION=0.05,
     ),
     dataset=DatasetConfig(
-        SEQ_LEN=50,
-        HORIZON=3,
+        SEQ_LEN=60,
+        HORIZON=40,
         TRAIN_FRAC=0.7,
         VAL_FRAC=0.15,
     ),
     koopman=KoopmanConfig(
         LATENT_DIM=8,
-        HIDDEN_DIM=64,
-        LR=1e-3,
+        HIDDEN_DIM=128,
+        LR=5e-4,
         BATCH_SIZE=64,
-        EPOCHS=30,
-        KOOPMAN_LAMBDA=5.0,
-        K_MAX=8,
+        EPOCHS=80,
+        KOOPMAN_LAMBDA=10.0,
+        K_MAX=12,
     ),
     transformer=TransformerConfig(
         LATENT_DIM=8,       # must match koopman.LATENT_DIM
@@ -211,13 +217,13 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         NUM_LAYERS=4,
         DIM_FEEDFORWARD=192,
         DROPOUT=0.1,
-        LR=1e-3,
+        LR=4e-4,
         BATCH_SIZE=64,
-        EPOCHS=30,
-        ROLLOUT_STEPS=120,
-        MAX_LEN_EXTRA=20,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
-        X_WEIGHT=1.5,
-        TEACHER_FORCING_START=1.0,
+        EPOCHS=100,
+        ROLLOUT_STEPS=100,
+        MAX_LEN_EXTRA=30,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
+        X_WEIGHT=1.0,
+        TEACHER_FORCING_START=0.6,
         TEACHER_FORCING_END=0.2,
         LATENT_NOISE_STD=0.01,
     ),
