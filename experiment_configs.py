@@ -232,6 +232,54 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
     ),
 )
 
+EXPERIMENTS["test_experiment2"] = ExperimentConfig(
+    name="test_experiment2",
+    DATA_ROOT="data",
+    simulation=SimulationConfig(
+        PROBLEM="two_body_problem",
+        G=1.0,
+        T_SPAN=(0.0, 3.0),
+        NUM_STEPS=200,
+        NUM_TRAJECTORIES=300,
+        NUM_TRAJ_OOD=3,
+        PERTURBATION=0.1,
+    ),
+    dataset=DatasetConfig(
+        SEQ_LEN=40,
+        HORIZON=20,
+        TRAIN_FRAC=0.7,
+        VAL_FRAC=0.15,
+    ),
+    koopman=KoopmanConfig(
+        LATENT_DIM=16,
+        HIDDEN_DIM=128,
+        LR=5e-4,
+        BATCH_SIZE=64,
+        EPOCHS=80,
+        KOOPMAN_LAMBDA=10.0,
+        K_MAX=12,
+    ),
+    transformer=TransformerConfig(
+        LATENT_DIM=16,       # must match koopman.LATENT_DIM
+        NHEAD=8,
+        NUM_LAYERS=12,
+        DIM_FEEDFORWARD=256,
+        DROPOUT=0.1,
+        LR=4e-4,
+        BATCH_SIZE=64,
+        EPOCHS=100,
+        ROLLOUT_STEPS=20,
+        MAX_LEN_EXTRA=30,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
+        X_WEIGHT=1.0,
+        TEACHER_FORCING_START=0.6,
+        TEACHER_FORCING_END=0.2,
+        LATENT_NOISE_STD=0.01,
+    ),
+    eval=EvalConfig(
+        OOD_ROLLOUT_STEPS=400,
+    ),
+)
+
 # ----------------------------------------------------------------
 # Helper API
 # ----------------------------------------------------------------
