@@ -698,7 +698,7 @@ def main():
     train_sample_indices = _fixed_sample_indices(train_norm, num_samples=10, seed=0)
 
     # 2) Build windowed datasets + loaders
-    train_dataset = WindowedTrajectoryDataset(train_norm, seq_len=SEQ_LEN)
+    train_dataset = WindowedTrajectoryDatset(train_norm, seq_len=SEQ_LEN)
     val_dataset   = WindowedTrajectoryDataset(val_norm,   seq_len=SEQ_LEN)
 
     if len(train_dataset) == 0:
