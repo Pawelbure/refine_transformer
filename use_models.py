@@ -198,6 +198,14 @@ def main():
     LATENT_DIM = k_cfg.LATENT_DIM
     HIDDEN_DIM = k_cfg.HIDDEN_DIM
 
+    tf_latent_dim = tf_cfg.LATENT_DIM
+    if tf_latent_dim != LATENT_DIM:
+        print(
+            f"Warning: Transformer latent_dim {tf_latent_dim} does not match "
+            f"Koopman latent_dim {LATENT_DIM}. Using {LATENT_DIM} for inference."
+        )
+        tf_latent_dim = LATENT_DIM
+
     SEQ_LEN     = ds_cfg.SEQ_LEN
     HORIZON     = ds_cfg.HORIZON
     BATCH_SIZE  = k_cfg.BATCH_SIZE
@@ -257,8 +265,17 @@ def main():
     ckpt_max_len = ckpt_pe.shape[1] if ckpt_pe is not None else 0
     model_max_len = max(max_len_tf, ckpt_max_len)
 
+    ckpt_latent_dim = ckpt_tf.get("model_state_dict", {}).get("input_norm.weight")
+    ckpt_latent_dim = ckpt_latent_dim.shape[0] if ckpt_latent_dim is not None else None
+    if ckpt_latent_dim is not None and ckpt_latent_dim != tf_latent_dim:
+        raise RuntimeError(
+            f"Transformer checkpoint latent_dim {ckpt_latent_dim} does not match "
+            f"Koopman latent_dim {tf_latent_dim}. Retrain the transformer with a "
+            "matching latent dimension."
+        )
+
     dyn_model = LatentTransformer(
-        latent_dim=tf_cfg.LATENT_DIM,
+        latent_dim=tf_latent_dim,
         nhead=tf_cfg.NHEAD,
         num_layers=tf_cfg.NUM_LAYERS,
         dim_feedforward=tf_cfg.DIM_FEEDFORWARD,

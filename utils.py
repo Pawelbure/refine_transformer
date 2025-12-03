@@ -35,17 +35,17 @@ def find_latest_koopman(pattern="koopman_ae_*", ckpt_name="koopman_ae_best.pt", 
 
 def find_latest_transformer(pattern="transformer_*", ckpt_name="transformer_best.pt", output_dir=""):
     search_pattern = os.path.join(output_dir, pattern)
-    dirs = glob.glob(search_pattern)
-    if not dirs:
+    dirs = sorted(glob.glob(search_pattern))
+    completed_dirs = [d for d in dirs if os.path.exists(os.path.join(d, ckpt_name))]
+
+    if not completed_dirs:
+        skipped = [d for d in dirs if not os.path.exists(os.path.join(d, ckpt_name))]
+        skipped_msg = f" Skipped dirs without {ckpt_name}: {skipped}" if skipped else ""
         raise FileNotFoundError(
-            f"No Transformer directories found matching {search_pattern}. "
-            "Run train_transformer.py once without --reuse_transformer."
+            f"No Transformer checkpoints found under {search_pattern}.{skipped_msg} "
+            "Run train_transformer.py to create one."
         )
-    dirs = sorted(dirs)
-    last_dir = dirs[-1]
+
+    last_dir = completed_dirs[-1]
     ckpt_path = os.path.join(last_dir, ckpt_name)
-    if not os.path.exists(ckpt_path):
-        raise FileNotFoundError(
-            f"Latest Transformer dir found ({last_dir}) but checkpoint missing: {ckpt_name}"
-        )
     return last_dir, ckpt_path

@@ -709,6 +709,14 @@ def main():
     LATENT_DIM = k_cfg.LATENT_DIM
     HIDDEN_DIM = k_cfg.HIDDEN_DIM
 
+    tf_latent_dim = tf_cfg.LATENT_DIM
+    if tf_latent_dim != LATENT_DIM:
+        print(
+            f"Warning: Transformer latent_dim {tf_latent_dim} does not match "
+            f"Koopman latent_dim {LATENT_DIM}. Using {LATENT_DIM} for both."
+        )
+        tf_latent_dim = LATENT_DIM
+
     NHEAD      = tf_cfg.NHEAD
     NUM_LAYERS = tf_cfg.NUM_LAYERS
     DIM_FEEDFORWARD = tf_cfg.DIM_FEEDFORWARD
@@ -777,31 +785,34 @@ def main():
     # Fixed subset of training trajectories for reproducible plotting and evaluation
     train_sample_indices = _fixed_sample_indices(train_norm, num_samples=10, seed=0)
 
-    # 4) Prepare output dir
+    # 4) Prepare output dir name (creation deferred so reuse scan ignores this run)
     time_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(EXP_OUTPUT_ROOT, f"transformer_{time_tag}")
-    os.makedirs(out_dir, exist_ok=True)
 
-    with open(os.path.join(out_dir, "info.txt"), "w") as f:
-        f.write(f"Dataset file: {ds_file}\n")
-        f.write(f"KoopmanAE dir: {koopman_dir}\n")
-        f.write(f"SEQ_LEN: {SEQ_LEN}\n")
-        f.write(f"HORIZON: {HORIZON}\n")
-        f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
-        f.write(f"EPOCHS: {EPOCHS}\n")
-        f.write(f"LR: {LR}\n")
-        f.write(f"LATENT_DIM: {LATENT_DIM}\n")
-        f.write(f"HIDDEN_DIM: {HIDDEN_DIM}\n")
-        f.write(f"NHEAD: {NHEAD}\n")
-        f.write(f"NUM_LAYERS: {NUM_LAYERS}\n")
-        f.write(f"DIM_FEEDFORWARD: {DIM_FEEDFORWARD}\n")
-        f.write(f"DROPOUT: {DROPOUT}\n")
-        f.write(f"ROLLOUT_STEPS: {ROLLOUT_STEPS}\n")
-        f.write(f"X_WEIGHT: {X_WEIGHT}\n")
-        f.write(f"TEACHER_FORCING_START: {TEACHER_FORCING_START}\n")
-        f.write(f"TEACHER_FORCING_END: {TEACHER_FORCING_END}\n")
-        f.write(f"LATENT_NOISE_STD: {LATENT_NOISE_STD}\n")
-    
+    def write_info(mode_note: str = ""):
+        info_path = os.path.join(out_dir, "info.txt")
+        with open(info_path, "w") as f:
+            f.write(f"Dataset file: {ds_file}\n")
+            f.write(f"KoopmanAE dir: {koopman_dir}\n")
+            f.write(f"SEQ_LEN: {SEQ_LEN}\n")
+            f.write(f"HORIZON: {HORIZON}\n")
+            f.write(f"BATCH_SIZE: {BATCH_SIZE}\n")
+            f.write(f"EPOCHS: {EPOCHS}\n")
+            f.write(f"LR: {LR}\n")
+            f.write(f"LATENT_DIM: {tf_latent_dim}\n")
+            f.write(f"HIDDEN_DIM: {HIDDEN_DIM}\n")
+            f.write(f"NHEAD: {NHEAD}\n")
+            f.write(f"NUM_LAYERS: {NUM_LAYERS}\n")
+            f.write(f"DIM_FEEDFORWARD: {DIM_FEEDFORWARD}\n")
+            f.write(f"DROPOUT: {DROPOUT}\n")
+            f.write(f"ROLLOUT_STEPS: {ROLLOUT_STEPS}\n")
+            f.write(f"X_WEIGHT: {X_WEIGHT}\n")
+            f.write(f"TEACHER_FORCING_START: {TEACHER_FORCING_START}\n")
+            f.write(f"TEACHER_FORCING_END: {TEACHER_FORCING_END}\n")
+            f.write(f"LATENT_NOISE_STD: {LATENT_NOISE_STD}\n")
+            if mode_note:
+                f.write(f"MODE: {mode_note}\n")
+
     # 5) Initialize (or reuse) Transformer
     best_rollout_loss = float("nan")
     final_epoch = "final"
@@ -814,6 +825,8 @@ def main():
     latest_tf_dir = None
     latest_tf_ckpt_path = None
     latest_tf_err = ""
+    ckpt_tf = None
+    ckpt_latent_dim = None
 
     try:
         latest_tf_dir, latest_tf_ckpt_path = find_latest_transformer(output_dir=EXP_OUTPUT_ROOT)
@@ -839,26 +852,46 @@ def main():
         tf_mode = "train"
 
     reuse_ckpt_path = None
-    ckpt_tf = None
 
-    if tf_mode == "reuse":
+    if tf_mode in {"reuse", "continue"} and latest_tf_ckpt_path:
+        ckpt_tf = torch.load(latest_tf_ckpt_path, map_location=DEVICE)
+        ckpt_latent_dim = ckpt_tf.get("model_state_dict", {}).get("input_norm.weight")
+        ckpt_latent_dim = ckpt_latent_dim.shape[0] if ckpt_latent_dim is not None else None
+        if ckpt_latent_dim is not None and ckpt_latent_dim != tf_latent_dim:
+            print(
+                f"\nTransformer checkpoint latent_dim {ckpt_latent_dim} "
+                f"does not match Koopman latent_dim {tf_latent_dim}. "
+                "Training a new model instead.\n"
+            )
+            tf_mode = "train"
+            ckpt_tf = None
+            ckpt_latent_dim = None
+        elif ckpt_latent_dim is None:
+            print("Could not infer latent_dim from Transformer checkpoint; assuming compatibility.")
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    if tf_mode == "reuse" and ckpt_tf is not None:
         print(f"\nReusing existing Transformer checkpoint from: {latest_tf_ckpt_path}")
         shutil.copytree(latest_tf_dir, out_dir, dirs_exist_ok=True)
         reuse_ckpt_path = os.path.join(out_dir, "transformer_best.pt")
-        ckpt_tf = torch.load(reuse_ckpt_path, map_location=DEVICE)
+        shutil.copy(latest_tf_ckpt_path, reuse_ckpt_path)
         reuse_transformer = True
-    elif tf_mode == "continue":
+        write_info(mode_note="reuse")
+    elif tf_mode == "continue" and ckpt_tf is not None:
         print(f"\nContinuing Transformer training from: {latest_tf_ckpt_path}")
         shutil.copytree(latest_tf_dir, out_dir, dirs_exist_ok=True)
         reuse_ckpt_path = os.path.join(out_dir, "transformer_best.pt")
-        ckpt_tf = torch.load(reuse_ckpt_path, map_location=DEVICE)
+        shutil.copy(latest_tf_ckpt_path, reuse_ckpt_path)
         start_epoch_tf = int(ckpt_tf.get("epoch", 0))
         resume_optimizer_state_tf = ckpt_tf.get("optimizer_state_dict")
         best_val_from_ckpt_tf = ckpt_tf.get("val_loss")
         best_rollout_from_ckpt_tf = ckpt_tf.get("rollout_val_loss")
         continue_transformer = True
+        write_info(mode_note="continue")
     else:
         tf_mode = "train"
+        write_info(mode_note="train")
 
     if reuse_transformer:
         print(f"Loading Transformer from: {reuse_ckpt_path}")
@@ -868,7 +901,7 @@ def main():
         model_max_len = max(max_len_tf, ckpt_max_len)
 
         dyn_model = LatentTransformer(
-            latent_dim=tf_cfg.LATENT_DIM,
+            latent_dim=tf_latent_dim,
             nhead=tf_cfg.NHEAD,
             num_layers=tf_cfg.NUM_LAYERS,
             dim_feedforward=tf_cfg.DIM_FEEDFORWARD,
@@ -894,7 +927,7 @@ def main():
         model_max_len = max(max_len_tf, ckpt_max_len)
 
         dyn_model = LatentTransformer(
-            latent_dim=tf_cfg.LATENT_DIM,
+            latent_dim=tf_latent_dim,
             nhead=tf_cfg.NHEAD,
             num_layers=tf_cfg.NUM_LAYERS,
             dim_feedforward=tf_cfg.DIM_FEEDFORWARD,
