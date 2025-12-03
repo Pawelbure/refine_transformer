@@ -56,7 +56,7 @@ class WindowedSequenceDataset(Dataset):
         self.index = []  # list of (traj_idx, start_t)
         N, T, _ = data.shape
         for n in range(N):
-            max_start = T - seq_len - horizon
+            max_start = T - seq_len - horizon + 1
             if max_start <= 0:
                 continue
             for t0 in range(max_start):
@@ -760,6 +760,13 @@ def main():
     train_ds = WindowedSequenceDataset(train_norm, seq_len=SEQ_LEN, horizon=HORIZON)
     val_ds   = WindowedSequenceDataset(val_norm,   seq_len=SEQ_LEN, horizon=HORIZON)
     test_ds  = WindowedSequenceDataset(test_norm,  seq_len=SEQ_LEN, horizon=HORIZON)
+
+    if len(train_ds) == 0:
+        raise ValueError(
+            f"No Transformer training windows available: trajectory length {T_total} < "
+            f"SEQ_LEN+HORIZON ({SEQ_LEN + HORIZON}). "
+            "Increase trajectory length or reduce SEQ_LEN/HORIZON in the experiment config."
+        )
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  drop_last=True)
     val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, drop_last=False)

@@ -50,8 +50,8 @@ class WindowedTrajectoryDataset(Dataset):
         self.index = []  # list of (traj_idx, start_t)
         N, T, _ = data.shape
         for n in range(N):
-            # we need a full seq_len window
-            max_start = T - seq_len
+            # Include the last possible window that ends exactly at T
+            max_start = T - seq_len + 1
             if max_start <= 0:
                 continue
             for t0 in range(max_start):
@@ -696,6 +696,12 @@ def main():
     # 2) Build windowed datasets + loaders
     train_dataset = WindowedTrajectoryDatset(train_norm, seq_len=SEQ_LEN)
     val_dataset   = WindowedTrajectoryDataset(val_norm,   seq_len=SEQ_LEN)
+
+    if len(train_dataset) == 0:
+        raise ValueError(
+            f"No training windows available: trajectory length {T} < SEQ_LEN {SEQ_LEN}. "
+            "Increase trajectory length or reduce SEQ_LEN in the experiment config."
+        )
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE,
                               shuffle=True, drop_last=True)
