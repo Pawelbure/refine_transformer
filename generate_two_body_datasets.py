@@ -10,6 +10,7 @@
 
 import os
 import math
+import json
 from datetime import datetime
 
 import argparse
@@ -17,6 +18,8 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+
+from dataclasses import asdict
 
 from experiment_configs import get_experiment_config, DEFAULT_EXPERIMENT
 
@@ -38,6 +41,9 @@ args = parser.parse_args()
 cfg = get_experiment_config(args.experiment)
 
 EXP_DATA_ROOT = f"{cfg.name}/{cfg.DATA_ROOT}"
+
+# Path to persist the full experiment configuration for reproducibility
+EXPERIMENT_CFG_PATH = os.path.join(cfg.name, "experiment_config.json")
 
 sim_cfg = cfg.simulation
 ds_cfg  = cfg.dataset
@@ -248,6 +254,13 @@ def plot_orbit_2d(states, title, out_path):
 # ============================================================
 def main():
     os.makedirs(EXP_DATA_ROOT, exist_ok=True)
+
+    # Persist the full experiment configuration for this run
+    cfg_dict = asdict(cfg)
+    os.makedirs(os.path.dirname(EXPERIMENT_CFG_PATH), exist_ok=True)
+    with open(EXPERIMENT_CFG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg_dict, f, indent=2)
+
     rng = np.random.default_rng(SEED)
 
     # 1) Simulate trajectories
