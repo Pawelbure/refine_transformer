@@ -212,10 +212,10 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         K_MAX=12,
     ),
     transformer=TransformerConfig(
-        LATENT_DIM=8,       # must match koopman.LATENT_DIM
-        NHEAD=4,
-        NUM_LAYERS=4,
-        DIM_FEEDFORWARD=192,
+        LATENT_DIM=16,       # must match koopman.LATENT_DIM
+        NHEAD=8,
+        NUM_LAYERS=12,
+        DIM_FEEDFORWARD=256,
         DROPOUT=0.1,
         LR=4e-4,
         BATCH_SIZE=64,
