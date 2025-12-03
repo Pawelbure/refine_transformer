@@ -361,8 +361,9 @@ def train_transformer(dyn_model, encoder, decoder,
             )
 
         if global_epoch % 5 == 0 or epoch == 1 or epoch == num_epochs:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(
-                f"[Transformer] Epoch {global_epoch:03d} | Train: {train_loss:.4e} | "
+                f"[{ts}] [Transformer] Epoch {global_epoch:03d} | Train: {train_loss:.4e} | "
                 f"Val: {val_loss:.4e} | Rollout Val: {rollout_val_loss:.4e} | "
                 f"TF prob: {tf_ratio:.2f}"
             )
@@ -397,7 +398,8 @@ def train_transformer(dyn_model, encoder, decoder,
                 device=device,
                 epoch=epoch
             )
-            print(f"  -> Saved Transformer rollout orbit plot for epoch {epoch}.")
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{ts}]   -> Saved Transformer rollout orbit plot for epoch {epoch}.")
 
     return best_val_loss, best_rollout_loss, history
 

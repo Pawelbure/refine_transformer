@@ -304,7 +304,11 @@ def train_koopman_ae(model, train_loader, val_loader,
             )
 
         if global_epoch % 5 == 0 or epoch == 1 or epoch == num_epochs:
-            print(f"[KoopmanAE] Epoch {global_epoch:03d} | Train: {train_loss:.4e} | Val: {val_loss:.4e}")
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(
+                f"[{ts}] [KoopmanAE] Epoch {global_epoch:03d} | Train: {train_loss:.4e} | "
+                f"Val: {val_loss:.4e}"
+            )
 
     # -------------------
     # Plot loss curves
