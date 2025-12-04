@@ -191,10 +191,10 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         PROBLEM="2d-throw",
         G=9.81,
         T_SPAN=(0.0, 4.0),
-        NUM_STEPS=300,
-        NUM_TRAJECTORIES=60,
+        NUM_STEPS=500,
+        NUM_TRAJECTORIES=200,
         NUM_TRAJ_OOD=6,
-        PERTURBATION=0.05,
+        PERTURBATION=0.4,
     ),
     dataset=DatasetConfig(
         SEQ_LEN=60,
@@ -208,7 +208,7 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         LR=5e-4,
         BATCH_SIZE=64,
         EPOCHS=80,
-        KOOPMAN_LAMBDA=10.0,
+        KOOPMAN_LAMBDA=500.0,
         K_MAX=12,
     ),
     transformer=TransformerConfig(
@@ -220,8 +220,8 @@ EXPERIMENTS["test_experiment"] = ExperimentConfig(
         LR=4e-4,
         BATCH_SIZE=64,
         EPOCHS=100,
-        ROLLOUT_STEPS=100,
-        MAX_LEN_EXTRA=30,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
+        ROLLOUT_STEPS=30,
+        MAX_LEN_EXTRA=50,   # PE length = SEQ_LEN + ROLLOUT_STEPS + MAX_LEN_EXTRA
         X_WEIGHT=1.0,
         TEACHER_FORCING_START=0.6,
         TEACHER_FORCING_END=0.2,
@@ -238,11 +238,11 @@ EXPERIMENTS["test_experiment2"] = ExperimentConfig(
     simulation=SimulationConfig(
         PROBLEM="two_body_problem",
         G=1.0,
-        T_SPAN=(0.0, 3.0),
-        NUM_STEPS=200,
-        NUM_TRAJECTORIES=300,
+        T_SPAN=(0.0, 4.0),
+        NUM_STEPS=300,
+        NUM_TRAJECTORIES=400,
         NUM_TRAJ_OOD=3,
-        PERTURBATION=0.1,
+        PERTURBATION=0.4,
     ),
     dataset=DatasetConfig(
         SEQ_LEN=40,
