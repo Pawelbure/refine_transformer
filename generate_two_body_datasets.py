@@ -10,6 +10,7 @@
 
 import os
 import math
+import json
 from datetime import datetime
 
 import argparse
@@ -17,6 +18,8 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+
+from dataclasses import asdict
 
 from experiment_configs import get_experiment_config, DEFAULT_EXPERIMENT
 
@@ -39,15 +42,19 @@ cfg = get_experiment_config(args.experiment)
 
 EXP_DATA_ROOT = f"{cfg.name}/{cfg.DATA_ROOT}"
 
+# Path to persist the full experiment configuration for reproducibility
+EXPERIMENT_CFG_PATH = os.path.join(cfg.name, "experiment_config.json")
+
 sim_cfg = cfg.simulation
 ds_cfg  = cfg.dataset
 
-G              = sim_cfg.G
-T_SPAN         = sim_cfg.T_SPAN
-NUM_STEPS      = sim_cfg.NUM_STEPS
+PROBLEM         = sim_cfg.PROBLEM
+G               = sim_cfg.G
+T_SPAN          = sim_cfg.T_SPAN
+NUM_STEPS       = sim_cfg.NUM_STEPS
 NUM_TRAJECTORIES = sim_cfg.NUM_TRAJECTORIES
-NUM_TRAJ_OOD   = sim_cfg.NUM_TRAJ_OOD
-PERTURBATION   = sim_cfg.PERTURBATION
+NUM_TRAJ_OOD    = sim_cfg.NUM_TRAJ_OOD
+PERTURBATION    = sim_cfg.PERTURBATION
 
 SEQ_LEN   = ds_cfg.SEQ_LEN
 HORIZON   = ds_cfg.HORIZON
@@ -55,7 +62,7 @@ TRAIN_FRAC = ds_cfg.TRAIN_FRAC
 VAL_FRAC   = ds_cfg.VAL_FRAC
 
 # ============================================================
-# Two-body dynamics and simulation
+# Dynamics and simulation
 # ============================================================
 def two_body_rhs(t, y, G, m1, m2):
     """
@@ -109,45 +116,84 @@ def simulate_two_body(m1, m2, x1_0, y1_0, x2_0, y2_0,
     return t_eval, states
 
 
+def simulate_throw(v0, angle_rad, g, t_span, num_steps, y0=0.0, x0=0.0):
+    """
+    Simple ballistic motion with constant gravity.
+    Returns positions only: (T, 2) -> [x, y].
+    """
+    t_eval = np.linspace(t_span[0], t_span[1], num_steps)
+    vx = v0 * math.cos(angle_rad)
+    vy = v0 * math.sin(angle_rad)
+
+    x = x0 + vx * t_eval
+    y = y0 + vy * t_eval - 0.5 * g * t_eval ** 2
+    states = np.stack([x, y], axis=1).astype(np.float32)
+    return t_eval, states
+
+
 def generate_trajectories(num_trajectories, t_span, num_steps, rng):
     """
-    Generate multiple 2-body trajectories with slight variations
-    in initial velocities, fixed masses.
+    Generate multiple trajectories for the selected PROBLEM.
     Returns:
         t_eval: (T,)
-        trajectories: list of length num_trajectories, each (T, 4)
+        trajectories: list of length num_trajectories, each (T, x_dim)
     """
-    trajectories = []
+    if PROBLEM == "two_body_problem":
+        trajectories = []
+        m1, m2 = 1.0, 1.0  # fixed masses
 
-    m1, m2 = 1.0, 1.0  # fixed masses
+        for _ in range(num_trajectories):
+            # symmetric initial positions
+            r = 1.0
+            x1_0, y1_0 = -r / 2.0, 0.0
+            x2_0, y2_0 =  r / 2.0, 0.0
 
-    for _ in range(num_trajectories):
-        # symmetric initial positions
-        r = 1.0
-        x1_0, y1_0 = -r / 2.0, 0.0
-        x2_0, y2_0 =  r / 2.0, 0.0
+            # circular orbit baseline speed
+            v_base = math.sqrt(G * (m1 + m2) / (4 * r))
+            # small random perturbation
+            eps_v = PERTURBATION * v_base
 
-        # circular orbit baseline speed
-        v_base = math.sqrt(G * (m1 + m2) / (4 * r))
-        # small random perturbation
-        eps_v = PERTURBATION * v_base
+            vx1_0 = 0.0
+            vy1_0 =  v_base + rng.uniform(-eps_v, eps_v)
 
-        vx1_0 = 0.0
-        vy1_0 =  v_base + rng.uniform(-eps_v, eps_v)
-        
-        vx2_0 = 0.0
-        vy2_0 = -v_base + rng.uniform(-eps_v, eps_v)
-                
-        t_eval, states = simulate_two_body(
-            m1, m2,
-            x1_0, y1_0, x2_0, y2_0,
-            vx1_0, vy1_0, vx2_0, vy2_0,
-            t_span=t_span,
-            num_steps=num_steps,
-        )
-        trajectories.append(states)  # (T, 4)
+            vx2_0 = 0.0
+            vy2_0 = -v_base + rng.uniform(-eps_v, eps_v)
 
-    return t_eval, trajectories
+            t_eval, states = simulate_two_body(
+                m1, m2,
+                x1_0, y1_0, x2_0, y2_0,
+                vx1_0, vy1_0, vx2_0, vy2_0,
+                t_span=t_span,
+                num_steps=num_steps,
+            )
+            trajectories.append(states)  # (T, 4)
+        return t_eval, trajectories
+
+    if PROBLEM == "2d-throw":
+        trajectories = []
+        # Base initial speed and launch angle (radians)
+        v_base = 8.0
+        angle_base = math.radians(55.0)
+
+        for _ in range(num_trajectories):
+            dv = rng.uniform(-PERTURBATION, PERTURBATION) * v_base
+            dtheta = rng.uniform(-PERTURBATION, PERTURBATION) * angle_base
+            v0 = max(0.5, v_base + dv)
+            angle = angle_base + dtheta
+
+            t_eval, states = simulate_throw(
+                v0=v0,
+                angle_rad=angle,
+                g=G,
+                t_span=t_span,
+                num_steps=num_steps,
+                y0=0.5,
+                x0=0.0,
+            )
+            trajectories.append(states)  # (T, 2)
+        return t_eval, trajectories
+
+    raise ValueError(f"Unsupported PROBLEM '{PROBLEM}'")
 
 
 # ============================================================
@@ -170,20 +216,28 @@ def split_indices(n_total, train_frac, val_frac):
 def plot_orbit_2d(states, title, out_path):
     """
     2D orbit plot:
-      - mass 1: (x1, y1)
-      - mass 2: (x2, y2)
-    states: (T, 4) [x1, y1, x2, y2] in physical space
+      - two_body_problem: (x1, y1) and (x2, y2)
+      - 2d-throw: (x, y) for a single projectile
+    states: (T, 2 or 4) in physical space
     """
-    x1 = states[:, 0]
-    y1 = states[:, 1]
-    x2 = states[:, 2]
-    y2 = states[:, 3]
-
     plt.figure(figsize=(6, 6))
-    plt.plot(x1, y1, label="Mass 1", linewidth=1.5)
-    plt.plot(x2, y2, label="Mass 2", linewidth=1.5)
-    plt.scatter(x1[0], y1[0], color="C0", marker="o", s=40, label="Start M1")
-    plt.scatter(x2[0], y2[0], color="C1", marker="o", s=40, label="Start M2")
+
+    if states.shape[1] == 4:
+        x1 = states[:, 0]
+        y1 = states[:, 1]
+        x2 = states[:, 2]
+        y2 = states[:, 3]
+
+        plt.plot(x1, y1, label="Mass 1", linewidth=1.5)
+        plt.plot(x2, y2, label="Mass 2", linewidth=1.5)
+        plt.scatter(x1[0], y1[0], color="C0", marker="o", s=40, label="Start M1")
+        plt.scatter(x2[0], y2[0], color="C1", marker="o", s=40, label="Start M2")
+    else:
+        x = states[:, 0]
+        y = states[:, 1]
+        plt.plot(x, y, label="Projectile", linewidth=1.5, color="C0")
+        plt.scatter(x[0], y[0], color="C0", marker="o", s=40, label="Start")
+
     plt.title(title)
     plt.xlabel("x")
     plt.ylabel("y")
@@ -200,21 +254,29 @@ def plot_orbit_2d(states, title, out_path):
 # ============================================================
 def main():
     os.makedirs(EXP_DATA_ROOT, exist_ok=True)
+
+    # Persist the full experiment configuration for this run
+    cfg_dict = asdict(cfg)
+    os.makedirs(os.path.dirname(EXPERIMENT_CFG_PATH), exist_ok=True)
+    with open(EXPERIMENT_CFG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg_dict, f, indent=2)
+
     rng = np.random.default_rng(SEED)
 
     # 1) Simulate trajectories
-    print("Simulating trajectories...")
+    print(f"Simulating trajectories for {PROBLEM}...")
     t_eval, trajectories = generate_trajectories(
         NUM_TRAJECTORIES, T_SPAN, NUM_STEPS, rng
     )
     dt = float(t_eval[1] - t_eval[0])
     print(f"Generated {len(trajectories)} trajectories, each of length {len(t_eval)}, dt={dt:.4f}")
 
-    # Stack into array: (N_traj, T, 4)
+    # Stack into array: (N_traj, T, x_dim)
     trajectories_raw = np.stack(trajectories, axis=0).astype(np.float32)
+    x_dim = trajectories_raw.shape[-1]
 
     # 2) Compute global mean/std over all trajectories (over time & trajs)
-    all_states = trajectories_raw.reshape(-1, 4)  # (N_traj * T, 4)
+    all_states = trajectories_raw.reshape(-1, x_dim)  # (N_traj * T, x_dim)
     state_mean = all_states.mean(axis=0).astype(np.float32)
     state_std  = all_states.std(axis=0).astype(np.float32) + 1e-8
 
@@ -222,7 +284,7 @@ def main():
     print("State std: ", state_std)
 
     # 3) Normalize trajectories
-    trajectories_norm = (trajectories_raw - state_mean) / state_std  # (N, T, 4)
+    trajectories_norm = (trajectories_raw - state_mean) / state_std  # (N, T, x_dim)
 
     # 4) Split over trajectories into train/val/test
     n_total = trajectories_raw.shape[0]
@@ -231,7 +293,7 @@ def main():
     )
     print(f"Traj split -> train: {len(train_idx)}, val: {len(val_idx)}, test: {len(test_idx)}")
 
-    train_raw = trajectories_raw[train_idx]  # (N_train, T, 4)
+    train_raw = trajectories_raw[train_idx]  # (N_train, T, x_dim)
     val_raw   = trajectories_raw[val_idx]
     test_raw  = trajectories_raw[test_idx]
 
@@ -241,7 +303,8 @@ def main():
 
     # 5) Save everything into data/ as a single npz
     time_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
-    ds_path = os.path.join(EXP_DATA_ROOT, f"two_body_dataset_{time_tag}.npz")
+    problem_tag = PROBLEM.replace("-", "_")
+    ds_path = os.path.join(EXP_DATA_ROOT, f"{problem_tag}_dataset_{time_tag}.npz")
 
     np.savez(
         ds_path,
@@ -257,6 +320,7 @@ def main():
         train_idx=train_idx,
         val_idx=val_idx,
         test_idx=test_idx,
+        problem=PROBLEM,
     )
 
     print(f"Saved dataset to: {ds_path}")

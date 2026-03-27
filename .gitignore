@@ -9,6 +9,7 @@ outputs/
 */transformer_*/
 */koopman_*/
 *.png
+saved_experiments/
 
 # Datasets and generated data
 data/

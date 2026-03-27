@@ -1,0 +1,52 @@
+{
+  "name": "test_experiment",
+  "DATA_ROOT": "data",
+  "simulation": {
+    "PROBLEM": "2d-throw",
+    "G": 9.81,
+    "T_SPAN": [
+      0.0,
+      4.0
+    ],
+    "NUM_STEPS": 500,
+    "NUM_TRAJECTORIES": 200,
+    "NUM_TRAJ_OOD": 6,
+    "PERTURBATION": 0.4
+  },
+  "dataset": {
+    "SEQ_LEN": 60,
+    "HORIZON": 40,
+    "TRAIN_FRAC": 0.7,
+    "VAL_FRAC": 0.15
+  },
+  "koopman": {
+    "LATENT_DIM": 8,
+    "HIDDEN_DIM": 128,
+    "LR": 0.0005,
+    "BATCH_SIZE": 64,
+    "EPOCHS": 80,
+    "KOOPMAN_LAMBDA": 500.0,
+    "K_MAX": 12
+  },
+  "transformer": {
+    "LATENT_DIM": 16,
+    "NHEAD": 8,
+    "NUM_LAYERS": 12,
+    "DIM_FEEDFORWARD": 256,
+    "DROPOUT": 0.1,
+    "LR": 0.0004,
+    "BATCH_SIZE": 64,
+    "EPOCHS": 100,
+    "ROLLOUT_STEPS": 30,
+    "MAX_LEN_EXTRA": 50,
+    "X_WEIGHT": 1.0,
+    "TEACHER_FORCING_START": 0.6,
+    "TEACHER_FORCING_END": 0.2,
+    "LATENT_NOISE_STD": 0.01,
+    "GRAD_CLIP": 0.0,
+    "FINE_TUNE_ENCODER": false
+  },
+  "eval": {
+    "OOD_ROLLOUT_STEPS": 400
+  }
+}
